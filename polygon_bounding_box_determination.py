@@ -311,7 +311,7 @@ def polygon_coordinates(image_array: np.array, debug: bool = False) -> Tuple[Lis
 	polygon = initial_rectangle(image_array)
 	if not polygon: 
 		return False
-	polygon = factor_fold_nodes(polygon, 6)
+	polygon = factor_fold_nodes(polygon, 8)
 
 	# Expand the n-gon
 	polygon = bb_expansion_coordination(image_array, polygon, debug = False)

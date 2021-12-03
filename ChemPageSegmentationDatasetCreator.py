@@ -85,7 +85,7 @@ class ChemPageSegmentationDatasetCreator:
         # Choose random font
         font_dir = os.path.abspath("./fonts/")
         fonts = os.listdir(font_dir)
-        font_sizes = range(12, 24)
+        font_sizes = range(16, 40)
 
         # Define random position for text element around the chemical structure (if it can be placed around it)
         width, height = im.size
@@ -215,7 +215,7 @@ class ChemPageSegmentationDatasetCreator:
             else:
                 newData.append(item)
         image.putdata(newData)
-        return image
+        return image.convert('RGB')
 
 
     def add_arrows_to_structure(
@@ -362,7 +362,7 @@ class ChemPageSegmentationDatasetCreator:
         image = self.depictor.random_depiction(smiles, shape)
         image = Image.fromarray(image)
         # Get coordinates of polygon around chemical structure
-        blurred_image = image.filter(ImageFilter.GaussianBlur(radius = 2.5))
+        blurred_image = image.filter(ImageFilter.GaussianBlur(radius = 5))
         blurred_image = self.pad_image(blurred_image, factor = 1.8)
         polygon = polygon_coordinates(image_array = np.asarray(blurred_image), debug = False)
         # Pad the non-blurred image
@@ -376,11 +376,11 @@ class ChemPageSegmentationDatasetCreator:
             # The image should not be bigger than necessary.
             image, polygon, label_bounding_box = self.delete_whitespace(image, polygon, label_bounding_box)
             
-            # In 20 percent of cases: Make structure image coloured to get more diversity in the training set (colours should be irrelevant for predictions)
-            #if random.choice(range(5)) == 0:
-            #	image = modify_colours(image, blacken = False)
-            #elif random.choice(range(5)) in [1,2]:
-            #	image = modify_colours(image, blacken = True)
+            #In 20 percent of cases: Make structure image coloured to get more diversity in the training set (colours should be irrelevant for predictions)
+            if random.choice(range(5)) == 0:
+            	image = self.modify_colours(image, blacken = False)
+            elif random.choice(range(5)) in [1,2]:
+            	image = self.modify_colours(image, blacken = True)
 
             # Add curved arrows in the structure
             if arrows:
@@ -584,7 +584,7 @@ class ChemPageSegmentationDatasetCreator:
 
         Returns:
             [type]: [description]
-        """
+        """     
         n = 0
         region_dicts = []
         paste_positions = []
@@ -597,7 +597,7 @@ class ChemPageSegmentationDatasetCreator:
                 elif label_type == 'reaction_condition':
                     label_str = self.depictor.reaction_condition_label_text()
                 # Determine font properties and type
-                fontsize = random.choice(range(12,24))
+                fontsize = random.choice(range(16,36))
                 try:
                     font_dir = './fonts/'
                     font = ImageFont.truetype(str(os.path.join(font_dir, random.choice(os.listdir(font_dir)))), size = fontsize)
@@ -610,7 +610,8 @@ class ChemPageSegmentationDatasetCreator:
                 try:
                     if label_type == 'r_group':
                         paste_position = (random.choice(range(image.size[0] - bbox[2])), random.choice(range(image.size[1] - bbox[3])))
-                        paste_region = image.crop((paste_position[0] - 30, paste_position[1] - 30, paste_position[0] + bbox[2] + 30, paste_position[1] + bbox[3] + 30)) # left, up, right, low
+                        buffer = 30
+                        paste_region = image.crop((paste_position[0] - buffer, paste_position[1] - buffer, paste_position[0] + bbox[2] + buffer, paste_position[1] + bbox[3] + buffer)) # left, up, right, low
                     elif label_type == 'reaction_condition':
                         # take random arrow positions and place reaction condition label around it
                         arrow_bbox = random.choice(arrow_bboxes)
@@ -625,13 +626,13 @@ class ChemPageSegmentationDatasetCreator:
                     if not invalid:
                         # Check that background in paste region is completely white
                         mean = ImageStat.Stat(paste_region).mean
-                        if sum(mean)/len(mean) == 0:
+                        if sum(mean)/len(mean) == 255:
                             # Add text element to image if region in image is completely white
                             draw = ImageDraw.Draw(image, 'RGBA')
                             draw.multiline_text(paste_position, label_str, font = font, fill=(0,0,0,255))
                             paste_positions.append(paste_position)
                             n += 1
-                            text_bbox = [(bbox[0], bbox[3]), (bbox[0], bbox[1]), (bbox[2], bbox[1]), (bbox[2], bbox[3])] # lower left, upper left, upper right, lower right [(x0, y0), (x1, y1), ...]
+                            text_bbox = [(bbox[3], bbox[0]), (bbox[1], bbox[0]), (bbox[1], bbox[2]), (bbox[3], bbox[2])] # lower left, upper left, upper right, lower right [(x0, y0), (x1, y1), ...]
                             if label_type == 'r_group':
                                 region_dicts.append([self.make_region_dict('R_group_label', text_bbox)])
                             if label_type == 'reaction_condition':
@@ -640,6 +641,7 @@ class ChemPageSegmentationDatasetCreator:
                     pass
             else: 
                 break
+        
         region_dicts = self.modify_annotations(original_regions = region_dicts, paste_anchors = paste_positions)
         return image, region_dicts
 
@@ -690,7 +692,7 @@ class ChemPageSegmentationDatasetCreator:
         for n in range(random.choice([2,3,5,7,9])):
             smiles = next(self.smiles_iterator)
             side_len = random.choice(range(200,400))
-            structure_image, annotation = self.generate_structure_and_annotation(smiles, shape=(side_len, side_len))
+            structure_image, annotation = self.generate_structure_and_annotation(smiles, shape=(side_len, side_len), label=random.choice([True, False]))
             structure_images.append(structure_image)
             annotated_regions.append(annotation['regions'])
             #image_name = random.choice([img for img in os.listdir(image_dir) if img[-3:].lower() == 'png'])
@@ -882,11 +884,13 @@ class ChemPageSegmentationDatasetCreator:
             image = self.paste_it(image, paste_positions, paste_images, False)
 
         # Insert labels and update annotations
-        image, R_group_regions = self.insert_labels(image, len(structure_images)-1, 'r_group')
-        annotated_regions += R_group_regions
-        arrow_bboxes = self.get_bboxes(arrow_image_list, arrow_paste_positions)
-        image, reaction_condition_regions = self.insert_labels(image, len(structure_images)-1, 'reaction_condition', arrow_bboxes)
-        annotated_regions += reaction_condition_regions
+        if random.choice([True, False]):
+            image, R_group_regions = self.insert_labels(image, len(structure_images)-1, 'r_group')
+            annotated_regions += R_group_regions
+        if random.choice([True, False]):
+            arrow_bboxes = self.get_bboxes(arrow_image_list, arrow_paste_positions)
+            image, reaction_condition_regions = self.insert_labels(image, len(structure_images)-1, 'reaction_condition', arrow_bboxes)
+            annotated_regions += reaction_condition_regions
         #image.show()
         #image.save(os.path.join(output_dir, str(number) + ".png"))
         #for img in structure_images:

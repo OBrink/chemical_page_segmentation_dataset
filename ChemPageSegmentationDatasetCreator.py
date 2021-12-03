@@ -24,22 +24,38 @@ class ChemPageSegmentationDatasetCreator:
     """
     The ChemPageSegmentationDatasetCreator class contains everything needed to generate a chemical page segmentation
     dataset based on PubLayNet.
-    ___
-    Some recycled code from an old version of the mask expansion mechanism 
-    of DECIMER Segmentation found its way in here for the polygon annotation creation :)
-    ___
-    To avoid confusion: 'bounding_box' usually refers to a polygon here and not necessarily to a rectangle
+    
     """
-    def __init__(self, smiles_list):
+    def __init__(self, smiles_list, load_PLN_annotations=True):
         self.depictor = random_depictor(seed = random.choice(range(10000000)))
         self.depictor.ID_label_text
         self.smiles_iterator = cycle(smiles_list)
-     
+        # Random images to be pasted (eg. COCO images) for diversification of elements on pages
+        self.random_image_dir = os.path.normpath('./random_images/')
+        self.random_image_iterator = cycle([os.path.join(self.random_image_dir, im) for im in  os.listdir(self.random_image_dir)])
+        # PubLayNet images
+        #self.PLN_dir = os.path.normpath('./publaynet/')
+        #self.PLN_image_iterator = cycle([os.path.join(self.PLN_dir, 'train', im) 
+        #                                 for im in os.listdir(os.path.join(self.PLN_dir, 'train'))])
+        # Load PLN annotations; this may take 1-2 minutes
+        if load_PLN_annotations:
+            self.PLN_annotations = self.load_PLN_annotations()
+            self.PLN_annotations['categories'].append({'supercategory': '', 'id': 6, 'name': 'chemical_structure'})
+            self.PLN_annotations['categories'].append({'supercategory': '', 'id': 7, 'name': 'chemical_ID'})
+            self.PLN_annotations['categories'].append({'supercategory': '', 'id': 8, 'name': 'arrow'})
+            self.PLN_annotations['categories'].append({'supercategory': '', 'id': 9, 'name': 'R_group_label'})
+            self.PLN_annotations['categories'].append({'supercategory': '', 'id': 10, 'name': 'reaction_condition_label'})
+            self.PLN_annotations['categories'].append({'supercategory': '', 'id': 11, 'name': 'chemical_structure_with_curved_arrows'})
+            
+        self.PLN_page_annotation_iterator = cycle([self.PLN_annotations[page]['annotations'] 
+                                              for page 
+                                              in self.PLN_annotations.keys() 
+                                              if page != 'categories'])
+
 
     def pad_image(self, pil_image: Image, factor: float):
         '''This function takes a Pillow Image and adds 10% padding on every side. It returns the padded Pillow Image'''
         original_size = pil_image.size
-
         new_size = (int(original_size[0]*factor), int(original_size[1]*factor))
         new_im = Image.new("L", new_size, color = 'white')
         new_im.paste(pil_image, (int((new_size[0]-original_size[0])/2),
@@ -92,7 +108,7 @@ class ChemPageSegmentationDatasetCreator:
         x_pos, y_pos = self.get_random_label_position(width, height, x_coordinates, y_coordinates)
         if x_pos == None:
             return im, None
-
+        
         # Choose random font size
         size = random.choice(font_sizes)
         label_text = self.depictor.ID_label_text()
@@ -378,9 +394,9 @@ class ChemPageSegmentationDatasetCreator:
             
             #In 20 percent of cases: Make structure image coloured to get more diversity in the training set (colours should be irrelevant for predictions)
             if random.choice(range(5)) == 0:
-            	image = self.modify_colours(image, blacken = False)
+                image = self.modify_colours(image, blacken = False)
             elif random.choice(range(5)) in [1,2]:
-            	image = self.modify_colours(image, blacken = True)
+                image = self.modify_colours(image, blacken = True)
 
             # Add curved arrows in the structure
             if arrows:
@@ -893,3 +909,372 @@ class ChemPageSegmentationDatasetCreator:
             annotated_regions += reaction_condition_regions
         return image.convert('RGB'), annotated_regions
 
+
+    def load_PLN_annotations(
+        self,
+        ) -> Dict:
+        """
+        This function loads the PubLayNet annotation dictionary and returns them in a clear format.
+        The returned dictionary only contain entries where the images actually exist locally in PLN_image_directory.
+        (--> No problems if only a part of PubLayNet was downloaded.)
+
+        Args:
+            PLN_json_path (str): Path of PubLayNet annotation file
+            PLN_image_dir ([type]): Path of directory with PubLayNet images
+
+        Returns:
+            Dict
+        """
+        PLN_json_path = os.path.join(self.PLN_dir, 'train.json')
+        PLN_image_dir = os.path.join(self.PLN_dir, 'train')
+        with open(PLN_json_path) as annotation_file:
+            PLN_annotations = json.load(annotation_file)
+        PLN_dict = {}
+        PLN_dict['categories'] = PLN_annotations['categories']
+        for image in PLN_annotations['images']:
+            if os.path.exists(os.path.join(PLN_image_dir,  image['file_name'])):
+                PLN_dict[image['id']] = {'file_name': os.path.join(PLN_image_dir,  image['file_name']), 'annotations': []}
+        for ann in PLN_annotations['annotations']:
+            if ann['image_id'] in PLN_dict.keys():
+                PLN_dict[ann['image_id']]['annotations'].append(ann)
+        return PLN_dict
+
+
+    def fix_polygon_coordinates(
+        self,
+        x_coords: List[int], 
+        y_coords: List[int], 
+        shape: Tuple[int]
+        ) -> Tuple[List[int], List[int]]:
+        """
+        If the coordinates are placed outside of the image, this function takes the lists of coordinates and the 
+        image shape and adapts coordinates that are placed outside of the image to be placed at its borders.
+
+        Args:
+            x_coords (List[int]): x coordinates
+            y_coords (List[int]): y coordinates
+            shape (Tuple[int]): image shape
+
+        Returns:
+            Tuple[List[int], List[int]]: x coordinates, y coordinates
+        """
+        for n in  range(len(x_coords)):
+            if x_coords[n] < 0:
+                x_coords[n] = 0
+            if y_coords[n] < 0:
+                y_coords[n] = 0
+            if x_coords[n] > shape[1]:
+                x_coords[n] = shape[1] - 1
+            if y_coords[n] > shape[0]:
+                y_coords[n] = shape[0]
+        return x_coords, y_coords
+
+
+    def modify_annotations_PLN(
+        self, 
+        #annotation_dir: str, 
+        #image_name: str, 
+        regions_dict: Dict,
+        old_image_shape: Tuple[int], 
+        new_image_shape: Tuple[int], 
+        paste_anchor: Tuple[int]
+        ) -> Dict:
+        """
+        This function takes information about the region where an image (structure, scheme ) has been
+        inserted. 
+        The coordinates of the regions are modified according to the resizing of the image and the position on the
+        page where it has been pasted.
+
+        Args:
+            regions_dict (Dict)
+            old_image_shape (Tuple[int])
+            new_image_shape (Tuple[int])
+            paste_anchor (Tuple[int])
+
+        Returns:
+            Dict
+        """
+        modified_annotations = []
+        #with open(os.path.join(annotation_dir, 'annotations.json')) as annotation_file:
+        #	chem_annotations = json.load(annotation_file)
+        #chem_regions = chem_annotations[image_name]['regions']
+        for region in regions_dict:
+            categories = {'chemical_structure': 6, 
+                        'chemical_ID': 7, 
+                        'arrow': 8, 
+                        'R_group_label': 9, 
+                        'reaction_condition_label': 10, 
+                        'chemical_structure_with_curved_arrows': 11}
+            category = region['region_attributes']['type']
+            category_ID = categories[category]
+
+            # Load coordinates and alter them according to the resizing
+            x_coords = region['shape_attributes']['all_points_x']
+            y_coords = region['shape_attributes']['all_points_y']
+            x_coords, ycoords = self.fix_polygon_coordinates(x_coords, y_coords, old_image_shape)
+            x_ratio = new_image_shape[1]/old_image_shape[1]
+            y_ratio = new_image_shape[0]/old_image_shape[0]
+            x_coords = [x_ratio*x_coord + paste_anchor[1] for x_coord in x_coords]
+            y_coords = [y_ratio*y_coord + paste_anchor[0] for y_coord in y_coords]
+            
+            # Get the coordinates into the right format ([x0, y0, x1, y1, ..., xn, yn])
+            modified_annotation = {'segmentation': [[]], 'category_id': category_ID}
+            for n in range(len(x_coords)):
+                modified_annotation['segmentation'][0].append(x_coords[n])
+                modified_annotation['segmentation'][0].append(y_coords[n])
+            modified_annotations.append(modified_annotation)
+        return modified_annotations
+
+
+    def determine_images_per_region(
+        self, 
+        region: Tuple[int]
+        ) -> Tuple[int, int]:
+        """
+        This function takes the bounding box coordinates of a region and returns two integers which indicate how many 
+        chemical structure depictions should be added (int1: vertical, int2: horizontal). The returned values depend on 
+        the region size and a random influence.
+
+        Args:
+            region (Tuple[int]): paste region bounding box
+
+        Returns:
+            Tuple[int, int]: "rows", "columns"
+        """
+        min_x, max_y, max_x, min_y = region
+        x_diff = max_x - min_x
+        y_diff = max_y - min_y
+        n = random.choice([100, 100, 100, 100, 150, 150, 200, 200, 300, 400])
+        horizontal_int = round(x_diff/n)
+        vertical_int = round(y_diff/n)
+        if horizontal_int < 1:
+            horizontal_int = 1
+        if vertical_int < 1:
+            vertical_int = 1
+        return vertical_int, horizontal_int
+
+
+    def paste_images(
+        self, 
+        image: Image, 
+        region: Tuple[int], 
+        images_vertical: int, 
+        images_horizontal: int, 
+        binarise_half: bool = True):
+        """
+        This function takes a page image (PIL.Image), the region where the structure depictions are supposed to be pasted into and the amount of images per row 
+        (horizontal_image) and per column (vertical_images).
+        It pastes the given amount of depictions into the region and returns the image and list of tuples that 
+        contains the path(s), names, original shapes, modified shapes and the paste coordinates (min_y, min_x)
+        of the pasted images for the annotation creation. If binarise_half is set True, 50% of the pasted images 
+        are binarised
+
+        Args:
+            image (Image): Page image where the structure depictions etc are supposed to be pasted.
+            region (Tuple[int]): bounding box of region where images are supposed to be pasted
+            images_vertical (int): number of images in vertical direction
+            images_horizontal (int): number of images in horizontal direction
+            binarise_half (bool, optional): If true, half of the pasted images are binarised. Defaults to True.
+
+        Returns:
+            Image, Dict: Page image with pasted elements, annotation information
+        """
+        pasted_structure_info = []
+        min_x, max_y, max_x, min_y = region
+        #Define positions for pasting images
+        x_diff = (max_x - min_x) / images_horizontal
+        x_steps = [min_x + x_diff * x for x in range(images_horizontal)]
+        y_diff = (max_y - min_y) / images_vertical
+        y_steps = [min_y + y_diff * y for y in range(images_vertical)]
+        # Define paste regions
+        paste_regions = []
+        for n in range(len(x_steps)):
+            for m in range(len(y_steps)):
+                paste_regions.append((int(x_steps[n]), int(x_steps[n] + x_diff), int(y_steps[m]), int(y_steps[m]  + y_diff)))
+                
+        for paste_region in paste_regions:
+            min_x, max_x, min_y, max_y = paste_region
+
+            structure_image = Image.open(os.path.join(structure_image_path,structure_image_name))
+
+            # # The background of the reaction schemes is black if this is not done:
+            # if structure_image.mode == 'RGBA':
+            #     background = Image.new('RGBA', structure_image.size, (255,255,255))
+            #     structure_image = Image.alpha_composite(background, structure_image)
+
+
+            image_shape = (structure_image.size[1], structure_image.size[0])
+            modified_image_shape = ((max_y-min_y, max_x-min_x))
+            if max_x - min_x > 0 and max_y - min_y > 0:
+                structure_image = structure_image.resize((max_x-min_x, max_y-min_y))
+                # Binarize half of the images if desired
+                if binarise_half:
+                    if random.choice([True, False]):
+                        fn = lambda x : 255 if x > 150 else 0
+                        structure_image = structure_image.convert('L').point(fn, mode='1')   
+            pasted_structure_info.append((structure_image_path, structure_image_name, image_shape, modified_image_shape, (min_y, min_x)))
+        return image, pasted_structure_info
+
+
+    def CreateChemPage(
+        self,
+        #filename: str, 
+        #image_path: str, 
+        #output_path: str, 
+        #annotations: List[Dict], 
+        #structure_dir: str, 
+        #structure_with_curved_arrows_dir: str, 
+        #reaction_scheme_dir: str, 
+        #random_image_dir: str, 
+        #categories: Dict
+        ):
+        annotations = page_annotation['annotations']
+        # Open PubLayNet page image with region to paste elements
+        place_to_paste = False
+        while not place_to_paste:
+            page_annotation = next(self.PLN_page_annotation_iterator)
+            # Open PubLayNet Page Image
+            image = Image.open(page_annotation['file_name'])
+            image = deepcopy(np.asarray(image))
+            modified_annotations = []
+            figure_regions = []
+
+            # Make sure only pages that contain a figure or a table are processed.
+            category_IDs =  [annotation['category_id'] - 1 for annotation in annotations]
+            found_categories = [categories[category_ID]['name'] for category_ID in category_IDs]
+            if 'figure' in found_categories:
+                place_to_paste = True
+            if 'table' in found_categories:
+                place_to_paste = True
+
+        
+        for annotation in annotations:
+            category_ID = annotation['category_id'] - 1
+            category = self.PLN_annotations['categories'][category_ID]['name']
+            # Leave every element that is not a figure untouched
+            if category not in ['figure', 'list']:
+                modified_annotations.append(annotation)
+            else:
+                # Delete Figures in images
+                polygon = annotation['segmentation'][0]
+                polygon_y = [int(polygon[n]) for n in range(len(polygon)) if n%2!=0]
+                polygon_x = [int(polygon[n]) for n in range(len(polygon)) if n%2==0]
+                figure_regions.append((min(polygon_x),max(polygon_y),max(polygon_x),min(polygon_y)))
+                #figure_regions.append(annotation['bbox'])
+                for x in range(min(polygon_x), max(polygon_x)):
+                    for y in range(min(polygon_y), max(polygon_y)):
+                        image[y,x] = [255,255,255]
+
+        #  Paste new elements 
+        image = Image.fromarray(image)
+        for region in figure_regions:
+            paste_im_type = random.choice('structure', 'scheme', 'random')
+
+            # Region boundaries
+            region = [round(x) for x in region]
+            min_x, max_y, max_x, min_y = region
+            # Determine how many chemical structures should be placed in the region.
+            if paste_im_type == 'structure':
+                images_vertical, images_horizontal = self.determine_images_per_region(region)
+            else:
+                # We don't want a grid of reaction schemes or random images.
+                images_vertical, images_horizontal = (1, 1)
+            
+            # The random images don't have annotations
+            # if paste_im_type != 'random': 
+            #     image, pasted_structure_info = paste_images(image, paste_image_dir, region, images_vertical, images_horizontal)
+            #     # Modify annotations according to resized pasted image
+            #     for info in pasted_structure_info:
+            #         image_path, image_name, image_shape, modified_image_shape, paste_anchor = info
+            #         modified_chem_annotations = modify_annotations(image_path, image_name, image_shape, modified_image_shape, paste_anchor)
+            #         modified_annotations += modified_chem_annotations
+            else:
+                image, pasted_structure_info = paste_images(image, paste_image_dir, region, images_vertical, images_horizontal, binarise_half = True)
+        
+        return image, modified_annotations
+
+
+# def coordination(filename: str, image_path: str, output_path: str, annotations: List[Dict], structure_dir: str, structure_with_curved_arrows_dir: str, reaction_scheme_dir: str, random_image_dir: str, categories: Dict):
+# 	'''This function just wraps up the replacement of figure and the creation of the metadata_dicts per figure to enable multiprocessing.'''
+# 	ann = replace_elements(filename, image_path, output_path, annotations, structure_dir, structure_with_curved_arrows_dir, reaction_scheme_dir, random_image_dir, categories)
+# 	if not ann:
+# 		return False
+# 	else:
+# 		metadata_dict = make_img_metadata_dict(filename, image_path, ann, categories)
+# 		return metadata_dict
+
+# def main(
+# 	reaction_scheme_dir: str = sys.argv[1], 
+# 	structure_dir: str = sys.argv[2], 
+# 	curved_arrow_structure_dir: str = sys.argv[3], 
+# 	random_image_dir: str = sys.argv[4], 
+# 	PubLayNet_image_dir: str = sys.argv[5], 
+# 	output_dir: str = sys.argv[6], 
+# 	PubLayNet_json: str = sys.argv[7]):
+# 	'''This script takes a directory with images of chemical structure depictions with 
+# 	added chemical label, a directory containing PubLayNet images, an output directory and
+# 	a json file that contains the PubLayNet annotations for the images.
+# 	It deletes all regions that are annotated as 'Figure' in the original dataset and replaces
+# 	them with images of chemical structure depictions with ID labels. 
+# 	The modified images as well as a json file containing the annotations (VIA compatible) are saved
+# 	in the output directory.'''
+
+# 	# Define relevant paths, load annotations and print usage note if the input is invalid.
+# 	for directory in sys.argv[1:]:
+# 		if os.path.exists(directory) and len(sys.argv) == 8:
+# 			pass
+# 		else:
+# 			print('INVALID INPUT \n Problem with: ' + directory + '\nUsage: ' + sys.argv[0] + ' reaction_scheme_dir structure_dir curved_arrow_structure_dir random_image_dir PubLayNet_image_dir output_dir PubLayNet_json')
+# 			return
+
+# 	reaction_scheme_dir = os.path.abspath(reaction_scheme_dir)
+# 	structure_dir = os.path.abspath(structure_dir)
+# 	curved_arrow_structure_dir = os.path.abspath(curved_arrow_structure_dir)
+# 	random_image_dir = os.path.abspath(random_image_dir)
+# 	output_dir = os.path.abspath(output_dir)
+# 	PubLayNet_image_dir = os.path.abspath(PubLayNet_image_dir)
+# 	PLN_annotations = load_PLN_annotations(PubLayNet_json, PubLayNet_image_dir)
+
+# 	starmap_iterable = []
+# 	for page in PLN_annotations.keys():
+# 		if page != 'categories':
+# 			path, filename = os.path.split(os.path.normpath(PLN_annotations[page]['file_name']))
+# 			categories = PLN_annotations['categories']
+# 			categories.append({'supercategory': '', 'id': 6, 'name': 'chemical_structure'})
+# 			categories.append({'supercategory': '', 'id': 7, 'name': 'chemical_ID'})
+# 			categories.append({'supercategory': '', 'id': 8, 'name': 'arrow'})
+# 			categories.append({'supercategory': '', 'id': 9, 'name': 'R_group_label'})
+# 			categories.append({'supercategory': '', 'id': 10, 'name': 'reaction_condition_label'})
+# 			categories.append({'supercategory': '', 'id': 11, 'name': 'chemical_structure_with_curved_arrows'})
+# 			starmap_iterable.append((filename, path, output_dir, PLN_annotations[page]['annotations'], structure_dir, curved_arrow_structure_dir, reaction_scheme_dir, random_image_dir, categories))
+
+# 	with Pool(20) as p:
+# 		metadata_dicts = p.starmap(coordination, starmap_iterable)
+    
+
+# 	metadata_dicts = [metadata_dict for metadata_dict in metadata_dicts if metadata_dict]
+# 	via_json = make_VIA_dict(metadata_dicts)
+# 	with open(os.path.join(output_dir, 'annotations.json'), 'w') as output:
+# 		json.dump(via_json, output)
+
+
+# DUPLICATES
+
+# def make_img_metadata_dict(image_name: str, image_dir:str, PLN_annotation_subdicts: List[Dict], categories: List[Dict]) -> Dict:
+# 	'''This function takes the name of an image, the directory, the coordinates of annotated polygon region and the list
+# 	of category dicts as given in the PLN annotations and returns the VIA _img_metadata_subdict for this image.'''
+# 	metadata_dict = {}
+# 	metadata_dict['regions'] = []
+# 	metadata_dict['filename'] = image_name
+# 	metadata_dict['size'] = int(os.stat(os.path.join(image_dir, image_name)).st_size)
+# 	# TODO: Find better way to coordinate this. Right now, the image is opened here just to get the shape.
+# 	image = skimage.io.imread(os.path.join(image_dir, image_name))
+# 	metadata_dict['shape'] = image.shape[:2]
+# 	for annotation in PLN_annotation_subdicts:
+# 		polygon = annotation['segmentation'][0]
+# 		polygon = [(polygon[n], polygon[n-1]) for n in range(len(polygon)) if n%2!=0]
+# 		category_ID = annotation['category_id'] - 1
+# 		category = categories[category_ID]['name']
+# 		# Add dict for region which contains annotated entity
+# 		metadata_dict['regions'].append(make_region_dict(category, polygon))
+# 	return metadata_dict

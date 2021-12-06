@@ -1,6 +1,12 @@
 # Author: Henning Otto Brinkhaus
 # Friedrich-Schiller Universität Jena
 
+# ___
+# Some recycled code from an old version of the mask expansion mechanism 
+# of DECIMER Segmentation found its way in here for the polygon annotation creation :)
+# ___
+# To avoid confusion: 'bounding_box' usually refers to a polygon here and not necessarily to a rectangle
+
 import sys
 import os
 from typing import List, Tuple, Dict

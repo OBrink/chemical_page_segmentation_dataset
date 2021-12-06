@@ -46,11 +46,12 @@ class ChemPageSegmentationDatasetCreator:
             self.PLN_annotations['categories'].append({'supercategory': '', 'id': 9, 'name': 'R_group_label'})
             self.PLN_annotations['categories'].append({'supercategory': '', 'id': 10, 'name': 'reaction_condition_label'})
             self.PLN_annotations['categories'].append({'supercategory': '', 'id': 11, 'name': 'chemical_structure_with_curved_arrows'})
-            
-        self.PLN_page_annotation_iterator = cycle([self.PLN_annotations[page]['annotations'] 
-                                              for page 
-                                              in self.PLN_annotations.keys() 
-                                              if page != 'categories'])
+            self.PLN_page_annotation_iterator = cycle([self.PLN_annotations[page]['annotations'] 
+                                                for page 
+                                                in self.PLN_annotations.keys() 
+                                                if page != 'categories'])
+        else:
+            self.PLN_annotations, self.PLN_page_annotation_iterator = False, False
 
 
     def pad_image(self, pil_image: Image, factor: float):
@@ -136,12 +137,14 @@ class ChemPageSegmentationDatasetCreator:
         return im, label_bounding_box
 
 
-    def make_region_dict(self, type: str, polygon: np.ndarray) -> Dict:
+    def make_region_dict(self, type: str, polygon: np.ndarray, smiles: str=False) -> Dict:
         '''In order to avoid redundant code in make_img_metadata_dict, this function creates the dict that holds the information 
         for one single region. It expects a type (annotation string for the region) and an array containing tuples [(y0, x0), (y1, x1)...]'''
         region_dict = {}
         region_dict['region_attributes'] = {}
         region_dict['region_attributes']['type'] = type
+        if smiles:
+            region_dict['smiles'] = smiles
         region_dict['shape_attributes'] = {}
         region_dict['shape_attributes']['name'] = 'polygon'
         y_coordinates = [int(node[0]) for node in polygon]
@@ -151,25 +154,25 @@ class ChemPageSegmentationDatasetCreator:
         return region_dict
 
 
-    def make_img_metadata_dict(
-        self, 
-        image_name: str, 
-        chemical_structure_polygon: np.ndarray, 
-        label_bounding_box = False
-        ) -> Dict:
-        '''This function takes the name of an image, the coordinates of the chemical structure polygon and (if it exists) the 
-        bounding box of the ID label and creates the _via_img_metadata subdictionary for the VIA input.'''
-        metadata_dict = {}
-        metadata_dict['filename'] = image_name
-        #metadata_dict['size'] = int(os.stat(os.path.join(output_dir, image_name)).st_size)
-        metadata_dict['regions'] = []
-        # Add dict for first region which contains chemical structure
-        metadata_dict['regions'].append(self.make_region_dict('chemical_structure', chemical_structure_polygon))
-        # If there is an ID label: Add dict for the region that contains the label
-        if label_bounding_box:
-            label_bounding_box = [(node[1], node[0]) for node in label_bounding_box]
-            metadata_dict['regions'].append(self.make_region_dict('chemical_ID', label_bounding_box))
-        return metadata_dict
+    # def make_img_metadata_dict(
+    #     self, 
+    #     image_name: str, 
+    #     chemical_structure_polygon: np.ndarray, 
+    #     label_bounding_box = False
+    #     ) -> Dict:
+    #     '''This function takes the name of an image, the coordinates of the chemical structure polygon and (if it exists) the 
+    #     bounding box of the ID label and creates the _via_img_metadata subdictionary for the VIA input.'''
+    #     metadata_dict = {}
+    #     metadata_dict['filename'] = image_name
+    #     #metadata_dict['size'] = int(os.stat(os.path.join(output_dir, image_name)).st_size)
+    #     metadata_dict['regions'] = []
+    #     # Add dict for first region which contains chemical structure
+    #     metadata_dict['regions'].append(self.make_region_dict('chemical_structure', chemical_structure_polygon))
+    #     # If there is an ID label: Add dict for the region that contains the label
+    #     if label_bounding_box:
+    #         label_bounding_box = [(node[1], node[0]) for node in label_bounding_box]
+    #         metadata_dict['regions'].append(self.make_region_dict('chemical_ID', label_bounding_box))
+    #     return metadata_dict
 
 
     def make_VIA_dict(
@@ -403,37 +406,44 @@ class ChemPageSegmentationDatasetCreator:
                 arrow_dir = os.path.abspath('./arrows/arrow_images')
                 image = self.add_arrows_to_structure(image, arrow_dir, polygon)
 
-            metadata_dict = self.make_img_metadata_dict(smiles, polygon, label_bounding_box)
-            return image, metadata_dict
+            region_annotations = []
+            region_annotations.append(self.make_region_dict('chemical_structure', polygon, smiles))
+            if label_bounding_box:
+                label_bounding_box = [(node[1], node[0]) for node in label_bounding_box]
+                region_annotations.append(self.make_region_dict('chemical_ID', label_bounding_box))
+            #make_region_dict(self, type: str, polygon: np.ndarray, smiles: str=False) -> Dict:
+
+            #metadata_dict = self.make_img_metadata_dict(smiles, polygon, label_bounding_box)
+            return image, region_annotations
     
 
 
 
-    def make_img_metadata_dicts(
-        self, 
-        output_names: List[str], 
-        output_dir: str, 
-        region_dicts: List[Dict]
-        ) -> Dict:
-        """This function takes a list of output image names the image directory and a list of list of region 
-        dictionaries. It creates the _via_img_metadata subdictionary for the VIA input.
+    # def make_img_metadata_dicts(
+    #     self, 
+    #     output_names: List[str], 
+    #     output_dir: str, 
+    #     region_dicts: List[Dict]
+    #     ) -> Dict:
+    #     """This function takes a list of output image names the image directory and a list of list of region 
+    #     dictionaries. It creates the _via_img_metadata subdictionary for the VIA input.
 
-        Args:
-            output_names (List[str]): [description]
-            output_dir (str): [description]
-            region_dicts (List[Dict]): [description]
+    #     Args:
+    #         output_names (List[str]): [description]
+    #         output_dir (str): [description]
+    #         region_dicts (List[Dict]): [description]
 
-        Returns:
-            Dict: _via_img_metadata subdictionary for the VIA input
-        """
-        metadata_dicts = []
-        for index in range(len(output_names)):
-            metadata_dict = {}
-            metadata_dict['filename'] = output_names[index] + ".png"
-            metadata_dict['size'] = int(os.stat(os.path.join(output_dir, output_names[index] + ".png")).st_size)
-            metadata_dict['regions'] = region_dicts[index]
-            metadata_dicts.append(metadata_dict)
-        return metadata_dicts
+    #     Returns:
+    #         Dict: _via_img_metadata subdictionary for the VIA input
+    #     """
+    #     metadata_dicts = []
+    #     for index in range(len(output_names)):
+    #         metadata_dict = {}
+    #         metadata_dict['filename'] = output_names[index] + ".png"
+    #         metadata_dict['size'] = int(os.stat(os.path.join(output_dir, output_names[index] + ".png")).st_size)
+    #         metadata_dict['regions'] = region_dicts[index]
+    #         metadata_dicts.append(metadata_dict)
+    #     return metadata_dicts
 
 
     def is_valid_position(
@@ -710,7 +720,7 @@ class ChemPageSegmentationDatasetCreator:
             side_len = random.choice(range(200,400))
             structure_image, annotation = self.generate_structure_and_annotation(smiles, shape=(side_len, side_len), label=random.choice([True, False]))
             structure_images.append(structure_image)
-            annotated_regions.append(annotation['regions'])
+            annotated_regions.append(annotation)
             #image_name = random.choice([img for img in os.listdir(image_dir) if img[-3:].lower() == 'png'])
             #image_names.append(image_name)
             #annotated_regions.append(chem_annotations[image_name]['regions'])
@@ -1086,7 +1096,7 @@ class ChemPageSegmentationDatasetCreator:
         x_steps = [min_x + x_diff * x for x in range(images_horizontal)]
         y_diff = (max_y - min_y) / images_vertical
         y_steps = [min_y + y_diff * y for y in range(images_vertical)]
-        # Define paste regions
+        # Define paste region coordinates
         paste_regions = []
         for n in range(len(x_steps)):
             for m in range(len(y_steps)):
@@ -1094,8 +1104,13 @@ class ChemPageSegmentationDatasetCreator:
                 
         for paste_region in paste_regions:
             min_x, max_x, min_y, max_y = paste_region
-
-            structure_image = Image.open(os.path.join(structure_image_path,structure_image_name))
+            if paste_im_type == 'structure':
+                smiles = next(self.smiles_iterator)
+                paste_im, paste_im_annotation = self.generate_structure_and_annotation(smiles)
+            elif paste_im_type == 'random':
+                paste_im = next(self.random_image_iterator)
+                paste_im_annotation = False
+            #structure_image = Image.open(os.path.join(structure_image_path,structure_image_name))
 
             # # The background of the reaction schemes is black if this is not done:
             # if structure_image.mode == 'RGBA':
@@ -1112,24 +1127,31 @@ class ChemPageSegmentationDatasetCreator:
                     if random.choice([True, False]):
                         fn = lambda x : 255 if x > 150 else 0
                         structure_image = structure_image.convert('L').point(fn, mode='1')   
-            pasted_structure_info.append((structure_image_path, structure_image_name, image_shape, modified_image_shape, (min_y, min_x)))
+            #pasted_structure_info.append((structure_image_path, structure_image_name, image_shape, modified_image_shape, (min_y, min_x)))
+            # Modify annotations according to resized pasted image
+            for info in pasted_structure_info:
+                image_path, image_name, image_shape, modified_image_shape, paste_anchor = info
+                modified_chem_annotations = self.modify_annotations(image_path, image_name, image_shape, modified_image_shape, paste_anchor)
+                modified_annotations += modified_chem_annotations
         return image, pasted_structure_info
 
 
     def CreateChemPage(
         self,
-        #filename: str, 
-        #image_path: str, 
-        #output_path: str, 
-        #annotations: List[Dict], 
-        #structure_dir: str, 
-        #structure_with_curved_arrows_dir: str, 
-        #reaction_scheme_dir: str, 
-        #random_image_dir: str, 
+        #filename: str,
+        #image_path: str,
+        #output_path: str,
+        #annotations: List[Dict],
+        #structure_dir: str,
+        #structure_with_curved_arrows_dir: str,
+        #reaction_scheme_dir: str,
+        #random_image_dir: str,
         #categories: Dict
         ):
-        annotations = page_annotation['annotations']
+        #annotations = next(self.PLN_page_annotation_iterator) 
+        #annotations = page_annotation['annotations']
         # Open PubLayNet page image with region to paste elements
+        # (== Page with a figure that can be removed)
         place_to_paste = False
         while not place_to_paste:
             page_annotation = next(self.PLN_page_annotation_iterator)
@@ -1138,17 +1160,17 @@ class ChemPageSegmentationDatasetCreator:
             image = deepcopy(np.asarray(image))
             modified_annotations = []
             figure_regions = []
-
+            
             # Make sure only pages that contain a figure or a table are processed.
-            category_IDs =  [annotation['category_id'] - 1 for annotation in annotations]
-            found_categories = [categories[category_ID]['name'] for category_ID in category_IDs]
+            category_IDs =  [annotation['category_id'] - 1 for annotation in page_annotation]
+            found_categories = [self.PLN_annotations['categories'][category_ID]['name'] 
+                                for category_ID in category_IDs]
             if 'figure' in found_categories:
                 place_to_paste = True
             if 'table' in found_categories:
                 place_to_paste = True
-
-        
-        for annotation in annotations:
+        # Replace figures with white space
+        for annotation in page_annotation:
             category_ID = annotation['category_id'] - 1
             category = self.PLN_annotations['categories'][category_ID]['name']
             # Leave every element that is not a figure untouched
@@ -1165,13 +1187,12 @@ class ChemPageSegmentationDatasetCreator:
                     for y in range(min(polygon_y), max(polygon_y)):
                         image[y,x] = [255,255,255]
 
-        #  Paste new elements 
+        #  Paste new elements
         image = Image.fromarray(image)
         for region in figure_regions:
             paste_im_type = random.choice('structure', 'scheme', 'random')
-
             # Region boundaries
-            region = [round(x) for x in region]
+            region = [round(coord) for coord in region]
             min_x, max_y, max_x, min_y = region
             # Determine how many chemical structures should be placed in the region.
             if paste_im_type == 'structure':
@@ -1179,18 +1200,11 @@ class ChemPageSegmentationDatasetCreator:
             else:
                 # We don't want a grid of reaction schemes or random images.
                 images_vertical, images_horizontal = (1, 1)
-            
-            # The random images don't have annotations
-            # if paste_im_type != 'random': 
-            #     image, pasted_structure_info = paste_images(image, paste_image_dir, region, images_vertical, images_horizontal)
-            #     # Modify annotations according to resized pasted image
-            #     for info in pasted_structure_info:
-            #         image_path, image_name, image_shape, modified_image_shape, paste_anchor = info
-            #         modified_chem_annotations = modify_annotations(image_path, image_name, image_shape, modified_image_shape, paste_anchor)
-            #         modified_annotations += modified_chem_annotations
-            else:
-                image, pasted_structure_info = paste_images(image, paste_image_dir, region, images_vertical, images_horizontal, binarise_half = True)
-        
+
+
+                image, modified_annotations = self.paste_images(image, region, images_vertical, images_horizontal)
+
+            image, pasted_structure_info = self.paste_images(image, region, images_vertical, images_horizontal, binarise_half=True)
         return image, modified_annotations
 
 

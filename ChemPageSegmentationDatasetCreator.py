@@ -925,8 +925,10 @@ class ChemPageSegmentationDatasetCreator:
         Returns:
             Dict
         """
-        PLN_json_path = os.path.join(self.PLN_dir, 'train.json')
-        PLN_image_dir = os.path.join(self.PLN_dir, 'train')
+        #PLN_json_path = os.path.join(self.PLN_dir, 'train.json')
+        #PLN_image_dir = os.path.join(self.PLN_dir, 'train')
+        PLN_json_path = os.path.join(self.PLN_dir, 'val.json')
+        PLN_image_dir = os.path.join(self.PLN_dir, 'val')
         with open(PLN_json_path) as annotation_file:
             PLN_annotations = json.load(annotation_file)
         PLN_dict = {}
@@ -1009,14 +1011,11 @@ class ChemPageSegmentationDatasetCreator:
                 # Load coordinates and alter them according to the resizing
                 x_coords = region['shape_attributes']['all_points_x']
                 y_coords = region['shape_attributes']['all_points_y']
-                print(y_coords)
                 #x_coords, y_coords = self.fix_polygon_coordinates(x_coords, y_coords, old_image_shape)
                 x_ratio = new_image_shape[0]/old_image_shape[0]
                 y_ratio = new_image_shape[1]/old_image_shape[1]
-                print(y_ratio)
                 x_coords = [x_ratio*x_coord + paste_anchor[0] for x_coord in x_coords]
                 y_coords = [y_ratio*y_coord + paste_anchor[1] for y_coord in y_coords]
-                print(y_coords)
                 # Get the coordinates into the PLN annotation format ([x0, y0, x1, y1, ..., xn, yn])
                 modified_annotation = {'segmentation': [[]], 'category_id': category_ID}
                 for n in range(len(x_coords)):
@@ -1044,7 +1043,7 @@ class ChemPageSegmentationDatasetCreator:
         min_x, max_y, max_x, min_y = region
         x_diff = max_x - min_x
         y_diff = max_y - min_y
-        n = random.choice([100, 100, 100, 100, 150, 150, 200, 200, 300, 400])
+        n = random.choice([100, 100, 100, 100, 150, 150, 200, 200])
         horizontal_int = round(x_diff/n)
         vertical_int = round(y_diff/n)
         if horizontal_int < 1:
@@ -1098,7 +1097,7 @@ class ChemPageSegmentationDatasetCreator:
             binarise_half = False
             if paste_im_type == 'structure':
                 smiles = next(self.smiles_iterator)
-                paste_im, paste_im_annotation = self.generate_structure_and_annotation(smiles)    
+                paste_im, paste_im_annotation = self.generate_structure_and_annotation(smiles, label=random.choice([True, False]))    
             elif paste_im_type == 'scheme':
                 paste_im, paste_im_annotation = self.create_reaction_scheme()
             elif paste_im_type == 'random':
@@ -1107,31 +1106,25 @@ class ChemPageSegmentationDatasetCreator:
                 paste_im_annotation = False
 
             paste_im_shape = paste_im.size
-            #modified_im_shape = (max_y-min_y, max_x-min_x)
-            #modified_im_shape = (max_x-min_x, max_y-min_y)
             if max_x - min_x > 0 and max_y - min_y > 0:
                 # Keep image aspect while making sure that it can be pasted in the paste region
-                # THIS TAKES THE PASTE REGION; NOT THE IMAGE AS A REFERENCE!!!
-                #if max_x - min_x > max_y - min_y:
-                if paste_im.size[0] >= paste_im.size[1]:
-                    #if int((max_x-min_x)*(paste_im.size[1]/paste_im.size[0])) <= max_y-min_y:
-                        #modified_im_shape = (max_x-min_x, int((max_x-min_x)*(paste_im.size[1]/paste_im.size[0])))
-                    factor = (max_x-min_x)/paste_im.size[0]
-                    modified_im_shape = (int(factor * paste_im.size[0]), int(factor * paste_im.size[1]))
-                    #else:
-                    #    # TODO: This distorts the image
-                    #    modified_im_shape = (max_y-min_y, max_x-min_x)
+                for n in [1.0, 0.9, 0.8]:
+                    #if paste_im.size[0] > max_x-min_x:
+                    x_factor = n * (max_x-min_x)/paste_im.size[0]
+                    if x_factor * paste_im.size[1] <= (max_y-min_y):
+                        modified_im_shape = (int(n * max_x - n * min_x), int(x_factor * paste_im.size[1]))
+                        break
+                    # Try fitting pasted image to paste region height while keeping aspect
+                    #elif paste_im.size[0] > max_y-min_y:
+                    y_factor = n * (max_y - min_y) / paste_im.size[1]
+                    if n * y_factor * paste_im.size[0] <= (max_x-min_x):
+                        modified_im_shape = (int(n * y_factor * paste_im.size[0]), int(n * max_y - n * min_y))
+                        break
+                            
                 else:
-                    factor = (max_y-min_y)/paste_im.size[1]
-                    modified_im_shape = (int(factor * paste_im.size[0]), int(factor * paste_im.size[1]))
-                    #if int((max_y-min_y)*(paste_im.size[1]/paste_im.size[0])) <= max_x-min_x:
-                    #    modified_im_shape = (int((max_y-min_y)*(paste_im.size[0]/paste_im.size[1])), max_y-min_y)
-                    #else:
-                    #    # TODO: This distorts the image
-                    #    modified_im_shape = (max_y-min_y, max_x-min_x)
+                    # TODO: This distorts the image
+                    modified_im_shape = (max_x-min_x, max_y-min_y)
                 paste_im = paste_im.resize(modified_im_shape)
-                #paste_im = paste_im.resize((max_x-min_x, int((max_x-min_x)*(paste_im.size[1]/paste_im.size[0]))))
-                #paste_im = paste_im.resize((max_x-min_x, max_y-min_y))
                 # Binarize half of the images if desired
                 if binarise_half:
                     if random.choice([True, False]):
@@ -1146,20 +1139,7 @@ class ChemPageSegmentationDatasetCreator:
 
     def CreateChemPage(
         self,
-        #filename: str,
-        #image_path: str,
-        #output_path: str,
-        #annotations: List[Dict],
-        #structure_dir: str,
-        #structure_with_curved_arrows_dir: str,
-        #reaction_scheme_dir: str,
-        #random_image_dir: str,
-        #categories: Dict
         ):
-        #annotations = next(self.PLN_page_annotation_iterator) 
-        #annotations = page_annotation['annotations']
-        # Open PubLayNet page image with region to paste elements
-        # (== Page with a figure that can be removed)
         place_to_paste = False
         while not place_to_paste:
             page_annotation = next(self.PLN_page_annotation_iterator)
@@ -1175,8 +1155,8 @@ class ChemPageSegmentationDatasetCreator:
                                 for category_ID in category_IDs]
             if 'figure' in found_categories:
                 place_to_paste = True
-            if 'table' in found_categories:
-                place_to_paste = True
+            #if 'table' in found_categories:
+            #    place_to_paste = True
         # Replace figures with white space
         for annotation in page_annotation['annotations']:
             category_ID = annotation['category_id'] - 1

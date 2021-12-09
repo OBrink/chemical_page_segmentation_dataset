@@ -1117,8 +1117,8 @@ class ChemPageSegmentationDatasetCreator:
                     # Try fitting pasted image to paste region height while keeping aspect
                     #elif paste_im.size[0] > max_y-min_y:
                     y_factor = n * (max_y - min_y) / paste_im.size[1]
-                    if n * y_factor * paste_im.size[0] <= (max_x-min_x):
-                        modified_im_shape = (int(n * y_factor * paste_im.size[0]), int(n * max_y - n * min_y))
+                    if y_factor * paste_im.size[0] <= (max_x-min_x):
+                        modified_im_shape = (int(y_factor * paste_im.size[0]), int(n * max_y - n * min_y))
                         break
                             
                 else:

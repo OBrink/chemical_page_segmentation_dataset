@@ -1178,10 +1178,16 @@ class ChemPageSegmentationDatasetCreator:
         #  Paste new elements
         image = Image.fromarray(image)
         for region in figure_regions:
-            paste_im_type = random.choice(['structure', 'scheme', 'random'])
+            
+            
             # Region boundaries
             region = [round(coord) for coord in region]
-            #min_x, max_y, max_x, min_y = region
+            min_x, max_y, max_x, min_y = region
+            # Don't paste reaction schemes into tiny regions
+            if max_x-min_x > 200 and max_y-min_y > 200:
+                paste_im_type = random.choice(['structure', 'scheme', 'random'])
+            else:
+                paste_im_type = random.choice(['structure', 'random'])
             # Determine how many chemical structures should be placed in the region.
             if paste_im_type == 'structure':
                 images_vertical, images_horizontal = self.determine_images_per_region(region)

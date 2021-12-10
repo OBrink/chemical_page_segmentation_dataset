@@ -1102,6 +1102,7 @@ class ChemPageSegmentationDatasetCreator:
                 paste_im, paste_im_annotation = self.create_reaction_scheme()
             elif paste_im_type == 'random':
                 paste_im = Image.open(next(self.random_image_iterator))
+                paste_im = paste_im.rotate(random.choice([0, 90, 180, 270]))
                 binarise_half = True
                 paste_im_annotation = False
 

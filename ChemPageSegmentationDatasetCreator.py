@@ -52,16 +52,6 @@ class ChemPageSegmentationDatasetCreator:
                                                 if page != 'categories'])
         else:
             self.PLN_annotations, self.PLN_page_annotation_iterator = False, False
-            
-        #if not isJVMStarted():
-        #    self.jar_path = os.path.join(RanDepict.__path__[0], 'assets', 'jar_files/cdk_2_5.jar')
-        #    startJVM(self.jvmPath, "-ea", "-Djava.class.path=" + str(self.jar_path))
-        
-        # Set context for multiprocessing but make sure this only happens once
-        #try:
-        #    set_start_method("spawn")
-        #except RuntimeError:
-        #    pass
 
 
     def pad_image(self, pil_image: Image, factor: float):
@@ -72,7 +62,6 @@ class ChemPageSegmentationDatasetCreator:
         new_im.paste(pil_image, (int((new_size[0]-original_size[0])/2),
                         int((new_size[1]-original_size[1])/2)))
         return new_im
-
 
     def get_random_label_position(self, width: int, height: int, x_coordinates: List[int], y_coordinates: List[int]) -> Tuple:
         '''Given the coordinates of the polygon around the chemical structure and the image shape, this function determines
@@ -1249,37 +1238,40 @@ class ChemPageSegmentationDatasetCreator:
         - Multiprocessing context being set
         - Iterators being at the right position (otherwise, we will paste the
         same structures/images into the same PLN pages again and again)
+        - The seed of the random_depictor instance needs to be adjusted so that
+        it does not make the same "random" decisions over and over.
         Args:
             parallel_call_number ([type]): Page number
         """
-        if parallel_call_number + 1:
-            # JVM needs to be started
-            if not isJVMStarted():
-                jvmPath = getDefaultJVMPath()
-                jar_path = os.path.join(RanDepict.__path__[0], 'assets', 'jar_files/cdk_2_5.jar')
-                startJVM(jvmPath, "-ea", "-Djava.class.path=" + str(jar_path))
-            # Set context for multiprocessing but make sure this only happens once
-            try:
-                set_start_method("spawn")
-            except RuntimeError:
-                pass
-            # Iterators need to be updated so that we don't work with the same images again and again
-            for _ in range(parallel_call_number):
-                # Find next page with a region to paste chemical elements
-                place_to_paste = False
-                while not place_to_paste:
-                    page_annotation = next(self.PLN_page_annotation_iterator)
-                    # Make sure only pages that contain a figure or a table are processed.
-                    category_IDs =  [annotation['category_id'] - 1 for annotation in page_annotation['annotations']]
-                    found_categories = [self.PLN_annotations['categories'][category_ID]['name'] 
-                                        for category_ID in category_IDs]
-                    if 'figure' in found_categories:
-                        place_to_paste = True
-                    #if 'table' in found_categories:
-                    #    place_to_paste = True
-                next(self.random_image_iterator)
-                for _ in range(5):
-                    next(self.smiles_iterator)
+        # JVM needs to be started
+        if not isJVMStarted():
+            jvmPath = getDefaultJVMPath()
+            jar_path = os.path.join(RanDepict.__path__[0], 'assets', 'jar_files/cdk_2_5.jar')
+            startJVM(jvmPath, "-ea", "-Djava.class.path=" + str(jar_path))
+        # Set context for multiprocessing but make sure this only happens once
+        try:
+            set_start_method("spawn")
+        except RuntimeError:
+            pass
+        # Iterators need to be updated so that we don't work with the same images again and again
+        for _ in range(parallel_call_number):
+            # Find next page with a region to paste chemical elements
+            place_to_paste = False
+            while not place_to_paste:
+                page_annotation = next(self.PLN_page_annotation_iterator)
+                # Make sure only pages that contain a figure or a table are processed.
+                category_IDs =  [annotation['category_id'] - 1 for annotation in page_annotation['annotations']]
+                found_categories = [self.PLN_annotations['categories'][category_ID]['name'] 
+                                    for category_ID in category_IDs]
+                if 'figure' in found_categories:
+                    place_to_paste = True
+                #if 'table' in found_categories:
+                #    place_to_paste = True
+            next(self.random_image_iterator)
+            for _ in range(5):
+                next(self.smiles_iterator)
+        # Seed adjustment for random_depictor instance
+        self.depictor.seed = parallel_call_number
                 
 
 

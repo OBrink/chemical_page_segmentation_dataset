@@ -257,6 +257,7 @@ class ChemPageSegmentationDatasetCreator:
         else:
             random_colour = (0,0,0,255)
         for _ in range(random.choice(range(4, 15))):
+            resize_method = random.choice(self.depictor.PIL_resize_methods)
             arrow_image = Image.open(os.path.join(arrow_dir, random.choice(os.listdir(arrow_dir))))
             arrow_image = self.modify_colours(arrow_image)
             new_arrow_image_shape = int((x_max - x_min) / random.choice(range(3,6))), int((y_max - y_min) / random.choice(range(3,6)))
@@ -1040,7 +1041,7 @@ class ChemPageSegmentationDatasetCreator:
         min_x, max_y, max_x, min_y = region
         x_diff = max_x - min_x
         y_diff = max_y - min_y
-        n = random.choice([100, 100, 100, 100, 150, 150, 200, 200])
+        n = random.choice([50, 50, 50, 75, 75, 100, 100, 150, 150, 200, 200])
         horizontal_int = round(x_diff/n)
         vertical_int = round(y_diff/n)
         if horizontal_int < 1:
@@ -1248,7 +1249,7 @@ class ChemPageSegmentationDatasetCreator:
         if not isJVMStarted():
             jvmPath = getDefaultJVMPath()
             jar_path = os.path.join(RanDepict.__path__[0], 'assets', 'jar_files/cdk_2_5.jar')
-            startJVM(jvmPath, "-ea", "-Djava.class.path=" + str(jar_path))
+            startJVM(jvmPath, "-ea", "-Djava.class.path={}".format(jar_path))
         # Set context for multiprocessing but make sure this only happens once
         try:
             set_start_method("spawn")
@@ -1275,9 +1276,9 @@ class ChemPageSegmentationDatasetCreator:
         self.depictor.seed = parallel_call_number
                 
 
-
     def create_and_save_chemical_page(
         self,
+        output_dir: str = './ChemPLN_dataset/',
         parallel_call_number: int = False,
     ) -> Dict:
         """
@@ -1288,13 +1289,17 @@ class ChemPageSegmentationDatasetCreator:
         # If this is run in parallel, we need to take care of some things
         if parallel_call_number:
             self.parallelisation_adjustment(parallel_call_number)
-            
+        # Make sure that the output directory exists
+        if not os.path.exists(output_dir):
+            os.mkdir(output_dir)
+        # Create and save page, return annotations in VIA metadata dict format
         chemical_page, region_dicts = self.create_chemical_page()
         metadata_dict = {}
         filename = os.path.split(region_dicts["filename"])[-1] + '.png'
-        chemical_page.save(filename)
+        output_path = os.path.join(output_dir, filename)
+        chemical_page.save(output_path)
         metadata_dict['filename'] = filename
-        metadata_dict['size'] = int(os.stat(filename).st_size)
+        metadata_dict['size'] = int(os.stat(output_path).st_size)
         metadata_dict['shape'] = (chemical_page.size[1], chemical_page.size[0])
         metadata_dict['regions'] = region_dicts['regions']
         return metadata_dict
@@ -1303,6 +1308,7 @@ class ChemPageSegmentationDatasetCreator:
     def create_and_save_chemical_pages(
         self,
         number: int,
+        output_dir: str = './ChemPLN_dataset/',
     ) -> List[Dict]:
         """
         This function does the same as create_and_save_chemical_page but for multiple
@@ -1322,19 +1328,19 @@ class ChemPageSegmentationDatasetCreator:
                 annotation (Any): Result from create_and_save_chemical_pages
             """
             annotations.append(annotation)
+        # TODO: Make asynchronous calls work with with-statement. I tried it here but the results are not collected.
         # Create dataset in parallel
         p = Pool()
         for n in range(1, number + 1):
             print(n)
-            #n = next(self.PLN_page_annotation_iterator)
             a = p.apply_async(self.create_and_save_chemical_page, 
-                    args=([n]), 
+                    args=([output_dir, n]), 
                     callback=log_result)
             #print(a.get())
         p.close()
         p.join()
         return annotations
-            
+    
     
     # def coordination(filename: str, image_path: str, output_path: str, annotations: List[Dict], structure_dir: str, structure_with_curved_arrows_dir: str, reaction_scheme_dir: str, random_image_dir: str, categories: Dict):
 # 	'''This function just wraps up the replacement of figure and the creation of the metadata_dicts per figure to enable multiprocessing.'''

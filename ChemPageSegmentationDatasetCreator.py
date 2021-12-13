@@ -261,7 +261,7 @@ class ChemPageSegmentationDatasetCreator:
             arrow_image = Image.open(os.path.join(arrow_dir, random.choice(os.listdir(arrow_dir))))
             arrow_image = self.modify_colours(arrow_image)
             new_arrow_image_shape = int((x_max - x_min) / random.choice(range(3,6))), int((y_max - y_min) / random.choice(range(3,6)))
-            arrow_image = arrow_image.resize(new_arrow_image_shape, resample=Image.BICUBIC)
+            arrow_image = arrow_image.resize(new_arrow_image_shape, resample=resize_method)
             arrow_image = arrow_image.rotate(random.choice(range(360)), resample=Image.BICUBIC, expand=True)
 
             # Try different positions with the condition that the arrows are overlapping with non-white pixels (the structure)
@@ -724,10 +724,11 @@ class ChemPageSegmentationDatasetCreator:
         arrow_image = Image.alpha_composite(arrow_image, arrow_im)
         
         # Overview of image sizes
+        resize_method = random.choice(self.depictor.PIL_resize_methods)
         structure_image_sizes = [image.size for image in structure_images]
         structure_image_x = [size[0] for size in structure_image_sizes]
         structure_image_y = [size[1] for size in structure_image_sizes]
-        arrow_image = arrow_image.resize((structure_image_x[0], int(structure_image_y[1]/8)))
+        arrow_image = arrow_image.resize((structure_image_x[0], int(structure_image_y[1]/8)), resample=resize_method)
 
         # TODO: Improve the mess below
         # I hope I never have to touch this again but I think this is the easiest way to do this.
@@ -1124,7 +1125,8 @@ class ChemPageSegmentationDatasetCreator:
                 else:
                     # TODO: This distorts the image
                     modified_im_shape = (max_x-min_x, max_y-min_y)
-                paste_im = paste_im.resize(modified_im_shape)
+                resize_method = random.choice(self.depictor.PIL_resize_methods)
+                paste_im = paste_im.resize(modified_im_shape, resample=resize_method)
                 # Binarize half of the images if desired
                 if binarise_half:
                     if random.choice([True, False]):

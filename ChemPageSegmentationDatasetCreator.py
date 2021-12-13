@@ -1076,9 +1076,9 @@ class ChemPageSegmentationDatasetCreator:
             Image, Dict: Page image with pasted elements, annotation information
         """
         min_x, max_y, max_x, min_y = region
-        #Define positions for pasting images
+        # Define positions for pasting images
         x_diff = (max_x - min_x) / images_horizontal
-        x_steps = [min_x + x_diff * x for x in range(images_horizontal)]
+        x_steps = [min_x + x_diff * x  for x in range(images_horizontal)]
         y_diff = (max_y - min_y) / images_vertical
         y_steps = [min_y + y_diff * y for y in range(images_vertical)]
         # Define paste region coordinates
@@ -1086,7 +1086,8 @@ class ChemPageSegmentationDatasetCreator:
         paste_regions = []
         for n in range(len(x_steps)):
             for m in range(len(y_steps)):
-                paste_regions.append((int(x_steps[n]), int(x_steps[n] + x_diff), int(y_steps[m]), int(y_steps[m]  + y_diff)))
+                # Leave 5 px buffer
+                paste_regions.append((int(x_steps[n]), int(x_steps[n] + x_diff - 5), int(y_steps[m]), int(y_steps[m]  + y_diff - 5)))
                 
         for paste_region in paste_regions:
             min_x, max_x, min_y, max_y = paste_region
@@ -1297,6 +1298,7 @@ class ChemPageSegmentationDatasetCreator:
         metadata_dict['shape'] = (chemical_page.size[1], chemical_page.size[0])
         metadata_dict['regions'] = region_dicts['regions']
         return metadata_dict
+    
     
     def create_and_save_chemical_pages(
         self,

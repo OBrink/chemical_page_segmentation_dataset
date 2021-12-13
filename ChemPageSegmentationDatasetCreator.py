@@ -1169,7 +1169,7 @@ class ChemPageSegmentationDatasetCreator:
         for annotation in page_annotation['annotations']:
             category_ID = annotation['category_id'] - 1
             category = self.PLN_annotations['categories'][category_ID]['name']
-            # Leave every element that is not a figure untouched
+            # Leave every element that is not a figure/list untouched
             if category not in ['figure', 'list']:
                 modified_annotations.append(annotation)
             else:
@@ -1179,8 +1179,8 @@ class ChemPageSegmentationDatasetCreator:
                 polygon_x = [int(polygon[n]) for n in range(len(polygon)) if n%2==0]
                 figure_regions.append((min(polygon_x),max(polygon_y),max(polygon_x),min(polygon_y)))
                 #figure_regions.append(annotation['bbox'])
-                for x in range(min(polygon_x), max(polygon_x)):
-                    for y in range(min(polygon_y), max(polygon_y)):
+                for x in range(min(polygon_x)-2, max(polygon_x)+2):
+                    for y in range(min(polygon_y)-2, max(polygon_y)+2):
                         image[y,x] = [255,255,255]
 
         #  Paste new elements

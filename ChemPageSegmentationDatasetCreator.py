@@ -4,6 +4,7 @@
 
 import sys
 import os
+import json
 from typing import List, Tuple, Dict
 import numpy as np
 from PIL import Image, ImageFont, ImageDraw, ImageFilter, ImageStat
@@ -11,13 +12,12 @@ import random
 import json
 from copy import deepcopy
 from itertools import cycle
-from multiprocessing import Pool
+from multiprocessing import Pool, set_start_method
 from imantics import Polygons
 from skimage import morphology
 from polygon_bounding_box_determination import *
-from RanDepict import random_depictor
-
-#from generate_structures_with_annotations import generate_structure_and_annotation
+import RanDepict
+from jpype import startJVM, getDefaultJVMPath, isJVMStarted
 
 
 class ChemPageSegmentationDatasetCreator:
@@ -27,7 +27,7 @@ class ChemPageSegmentationDatasetCreator:
     
     """
     def __init__(self, smiles_list, load_PLN_annotations=True):
-        self.depictor = random_depictor(seed = random.choice(range(10000000)))
+        self.depictor = RanDepict.random_depictor(seed = random.choice(range(10000000)))
         self.depictor.ID_label_text
         self.smiles_iterator = cycle(smiles_list)
         # Random images to be pasted (eg. COCO images) for diversification of elements on pages
@@ -52,6 +52,16 @@ class ChemPageSegmentationDatasetCreator:
                                                 if page != 'categories'])
         else:
             self.PLN_annotations, self.PLN_page_annotation_iterator = False, False
+            
+        #if not isJVMStarted():
+        #    self.jar_path = os.path.join(RanDepict.__path__[0], 'assets', 'jar_files/cdk_2_5.jar')
+        #    startJVM(self.jvmPath, "-ea", "-Djava.class.path=" + str(self.jar_path))
+        
+        # Set context for multiprocessing but make sure this only happens once
+        #try:
+        #    set_start_method("spawn")
+        #except RuntimeError:
+        #    pass
 
 
     def pad_image(self, pil_image: Image, factor: float):
@@ -1139,6 +1149,14 @@ class ChemPageSegmentationDatasetCreator:
     def create_chemical_page(
         self,
         ):
+        """
+        This function returns a PubLayNet page with inserted chemical elements and the regions dict
+        which includes the positions/annotations.
+
+        Returns:
+            PIL.Image: Modified PubLayNet image
+            Dict: Annotations of elements in the image
+        """
         place_to_paste = False
         while not place_to_paste:
             page_annotation = next(self.PLN_page_annotation_iterator)
@@ -1224,15 +1242,60 @@ class ChemPageSegmentationDatasetCreator:
             metadata_dict['regions'].append(self.make_region_dict(category, polygon))
         return metadata_dict
 
+    def parallelisation_adjustment(self, parallel_call_number):
+        """
+        For the asynchronous function calls, we need to take care of:
+        - JVM being started in the instance
+        - Multiprocessing context being set
+        - Iterators being at the right position (otherwise, we will paste the
+        same structures/images into the same PLN pages again and again)
+        Args:
+            parallel_call_number ([type]): Page number
+        """
+        if parallel_call_number + 1:
+            # JVM needs to be started
+            if not isJVMStarted():
+                jvmPath = getDefaultJVMPath()
+                jar_path = os.path.join(RanDepict.__path__[0], 'assets', 'jar_files/cdk_2_5.jar')
+                startJVM(jvmPath, "-ea", "-Djava.class.path=" + str(jar_path))
+            # Set context for multiprocessing but make sure this only happens once
+            try:
+                set_start_method("spawn")
+            except RuntimeError:
+                pass
+            # Iterators need to be updated so that we don't work with the same images again and again
+            for _ in range(parallel_call_number):
+                # Find next page with a region to paste chemical elements
+                place_to_paste = False
+                while not place_to_paste:
+                    page_annotation = next(self.PLN_page_annotation_iterator)
+                    # Make sure only pages that contain a figure or a table are processed.
+                    category_IDs =  [annotation['category_id'] - 1 for annotation in page_annotation['annotations']]
+                    found_categories = [self.PLN_annotations['categories'][category_ID]['name'] 
+                                        for category_ID in category_IDs]
+                    if 'figure' in found_categories:
+                        place_to_paste = True
+                    #if 'table' in found_categories:
+                    #    place_to_paste = True
+                next(self.random_image_iterator)
+                for _ in range(5):
+                    next(self.smiles_iterator)
+                
+
 
     def create_and_save_chemical_page(
         self,
-    ):
+        parallel_call_number: int = False,
+    ) -> Dict:
         """
         This function calls create_chemical_page and modifies the resulting annotation so
         that it can be used for the VIA output.
         
         """
+        # If this is run in parallel, we need to take care of some things
+        if parallel_call_number:
+            self.parallelisation_adjustment(parallel_call_number)
+            
         chemical_page, region_dicts = self.create_chemical_page()
         metadata_dict = {}
         filename = os.path.split(region_dicts["filename"])[-1] + '.png'
@@ -1242,6 +1305,42 @@ class ChemPageSegmentationDatasetCreator:
         metadata_dict['shape'] = (chemical_page.size[1], chemical_page.size[0])
         metadata_dict['regions'] = region_dicts['regions']
         return metadata_dict
+    
+    def create_and_save_chemical_pages(
+        self,
+        number: int,
+    ) -> List[Dict]:
+        """
+        This function does the same as create_and_save_chemical_page but for multiple
+        images. Instead of one metadata dict, a list of them is returned.
+
+        Returns:
+            number [int]: Number of pages to create
+            List[Dict]: List of metadata dicts with annotations
+        """
+        annotations = []
+        def log_result(annotation):
+            """
+            Helper function that is called when create_and_save_chemical_pages returns 
+            a metadata dict which is then appended to the list of annotations.
+
+            Args:
+                annotation (Any): Result from create_and_save_chemical_pages
+            """
+            annotations.append(annotation)
+        # Create dataset in parallel
+        p = Pool()
+        for n in range(1, number + 1):
+            print(n)
+            #n = next(self.PLN_page_annotation_iterator)
+            a = p.apply_async(self.create_and_save_chemical_page, 
+                    args=([n]), 
+                    callback=log_result)
+            #print(a.get())
+        p.close()
+        p.join()
+        return annotations
+            
     
     # def coordination(filename: str, image_path: str, output_path: str, annotations: List[Dict], structure_dir: str, structure_with_curved_arrows_dir: str, reaction_scheme_dir: str, random_image_dir: str, categories: Dict):
 # 	'''This function just wraps up the replacement of figure and the creation of the metadata_dicts per figure to enable multiprocessing.'''

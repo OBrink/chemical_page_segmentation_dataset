@@ -176,17 +176,15 @@ class ChemPageSegmentationDatasetCreator:
 
 
     def make_VIA_dict(
-        self, 
-        metadata_dicts: List[Dict]
+        self,
+        metadata_dicts: List[Dict],
         ) -> Dict:
         '''This function takes a list of Dicts with the region information and returns a dict that can be opened
         using VIA when it is saved as a json file.'''
         VIA_dict = {}
-        VIA_dict["_via_img_metadata"] = {}
-        for region_dict in metadata_dicts:
-            VIA_dict["_via_img_metadata"][region_dict["filename"]] = region_dict
-        return VIA_dict["_via_img_metadata"]
-
+        for metadata_dict in metadata_dicts:
+            VIA_dict[metadata_dict["filename"]] = metadata_dict
+        return VIA_dict
 
 
     def pick_random_colour(
@@ -1138,7 +1136,7 @@ class ChemPageSegmentationDatasetCreator:
         return image, pasted_element_annotation
 
 
-    def CreateChemPage(
+    def create_chemical_page(
         self,
         ):
         place_to_paste = False
@@ -1226,7 +1224,26 @@ class ChemPageSegmentationDatasetCreator:
             metadata_dict['regions'].append(self.make_region_dict(category, polygon))
         return metadata_dict
 
-# def coordination(filename: str, image_path: str, output_path: str, annotations: List[Dict], structure_dir: str, structure_with_curved_arrows_dir: str, reaction_scheme_dir: str, random_image_dir: str, categories: Dict):
+
+    def create_and_save_chemical_page(
+        self,
+    ):
+        """
+        This function calls create_chemical_page and modifies the resulting annotation so
+        that it can be used for the VIA output.
+        
+        """
+        chemical_page, region_dicts = self.create_chemical_page()
+        metadata_dict = {}
+        filename = os.path.split(region_dicts["filename"])[-1] + '.png'
+        chemical_page.save(filename)
+        metadata_dict['filename'] = filename
+        metadata_dict['size'] = int(os.stat(filename).st_size)
+        metadata_dict['shape'] = (chemical_page.size[1], chemical_page.size[0])
+        metadata_dict['regions'] = region_dicts['regions']
+        return metadata_dict
+    
+    # def coordination(filename: str, image_path: str, output_path: str, annotations: List[Dict], structure_dir: str, structure_with_curved_arrows_dir: str, reaction_scheme_dir: str, random_image_dir: str, categories: Dict):
 # 	'''This function just wraps up the replacement of figure and the creation of the metadata_dicts per figure to enable multiprocessing.'''
 # 	ann = replace_elements(filename, image_path, output_path, annotations, structure_dir, structure_with_curved_arrows_dir, reaction_scheme_dir, random_image_dir, categories)
 # 	if not ann:

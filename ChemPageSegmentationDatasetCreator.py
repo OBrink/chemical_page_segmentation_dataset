@@ -12,7 +12,9 @@ import random
 import json
 from copy import deepcopy
 from itertools import cycle
-from multiprocessing import Pool, set_start_method
+import logging
+from logging.handlers import QueueHandler, QueueListener
+from multiprocessing import Pool, set_start_method, get_logger, log_to_stderr, Queue
 from imantics import Polygons
 from skimage import morphology
 from polygon_bounding_box_determination import *
@@ -52,7 +54,7 @@ class ChemPageSegmentationDatasetCreator:
                                                 if page != 'categories'])
         else:
             self.PLN_annotations, self.PLN_page_annotation_iterator = False, False
-
+        
 
     def pad_image(self, pil_image: Image, factor: float):
         '''This function takes a Pillow Image and adds 10% padding on every side. It returns the padded Pillow Image'''
@@ -1288,25 +1290,28 @@ class ChemPageSegmentationDatasetCreator:
         that it can be used for the VIA output.
         
         """
-        # If this is run in parallel, we need to take care of some things
-        if parallel_call_number:
-            self.parallelisation_adjustment(parallel_call_number)
-        # Make sure that the output directory exists
-        if not os.path.exists(output_dir):
-            os.mkdir(output_dir)
-        # Create and save page, return annotations in VIA metadata dict format
-        chemical_page, region_dicts = self.create_chemical_page()
-        metadata_dict = {}
-        filename = os.path.split(region_dicts["filename"])[-1] + '.png'
-        output_path = os.path.join(output_dir, filename)
-        chemical_page.save(output_path)
-        metadata_dict['filename'] = filename
-        metadata_dict['size'] = int(os.stat(output_path).st_size)
-        metadata_dict['shape'] = (chemical_page.size[1], chemical_page.size[0])
-        metadata_dict['regions'] = region_dicts['regions']
+        try:
+            # If this is run in parallel, we need to take care of some things
+            if parallel_call_number:
+                self.parallelisation_adjustment(parallel_call_number)
+            # Make sure that the output directory exists
+            if not os.path.exists(output_dir):
+                os.mkdir(output_dir)
+            # Create and save page, return annotations in VIA metadata dict format
+            chemical_page, region_dicts = self.create_chemical_page()
+            metadata_dict = {}
+            filename = os.path.split(region_dicts["filename"])[-1] + '.png'
+            output_path = os.path.join(output_dir, filename)
+            chemical_page.save(output_path)
+            metadata_dict['filename'] = filename
+            metadata_dict['size'] = int(os.stat(output_path).st_size)
+            metadata_dict['shape'] = (chemical_page.size[1], chemical_page.size[0])
+            metadata_dict['regions'] = region_dicts['regions']
+        except Exception as e:
+            logging.info("PROBLEM: Page with chemical annotations was not created during to the following exception: {}".format(e))
         return metadata_dict
-    
-    
+
+
     def create_and_save_chemical_pages(
         self,
         number: int,
@@ -1320,8 +1325,9 @@ class ChemPageSegmentationDatasetCreator:
             number [int]: Number of pages to create
             List[Dict]: List of metadata dicts with annotations
         """
+        # Make sure information from all processes is logged.
         annotations = []
-        def log_result(annotation):
+        def get_result(annotation):
             """
             Helper function that is called when create_and_save_chemical_pages returns 
             a metadata dict which is then appended to the list of annotations.
@@ -1332,81 +1338,43 @@ class ChemPageSegmentationDatasetCreator:
             annotations.append(annotation)
         # TODO: Make asynchronous calls work with with-statement. I tried it here but the results are not collected.
         # Create dataset in parallel
-        p = Pool()
+        q_listener, q = logger_init()
+        logging.info('Start dataset creation')
+        p = Pool(None, worker_init, [q])
         for n in range(1, number + 1):
-            print(n)
             a = p.apply_async(self.create_and_save_chemical_page, 
                     args=([output_dir, n]), 
-                    callback=log_result)
+                    callback=get_result)
             #print(a.get())
         p.close()
         p.join()
+        logging.info('Creation of images completed.')
+        q_listener.stop()
         return annotations
-    
-    
-    # def coordination(filename: str, image_path: str, output_path: str, annotations: List[Dict], structure_dir: str, structure_with_curved_arrows_dir: str, reaction_scheme_dir: str, random_image_dir: str, categories: Dict):
-# 	'''This function just wraps up the replacement of figure and the creation of the metadata_dicts per figure to enable multiprocessing.'''
-# 	ann = replace_elements(filename, image_path, output_path, annotations, structure_dir, structure_with_curved_arrows_dir, reaction_scheme_dir, random_image_dir, categories)
-# 	if not ann:
-# 		return False
-# 	else:
-# 		metadata_dict = make_img_metadata_dict(filename, image_path, ann, categories)
-# 		return metadata_dict
-
-# def main(
-# 	reaction_scheme_dir: str = sys.argv[1], 
-# 	structure_dir: str = sys.argv[2], 
-# 	curved_arrow_structure_dir: str = sys.argv[3], 
-# 	random_image_dir: str = sys.argv[4], 
-# 	PubLayNet_image_dir: str = sys.argv[5], 
-# 	output_dir: str = sys.argv[6], 
-# 	PubLayNet_json: str = sys.argv[7]):
-# 	'''This script takes a directory with images of chemical structure depictions with 
-# 	added chemical label, a directory containing PubLayNet images, an output directory and
-# 	a json file that contains the PubLayNet annotations for the images.
-# 	It deletes all regions that are annotated as 'Figure' in the original dataset and replaces
-# 	them with images of chemical structure depictions with ID labels. 
-# 	The modified images as well as a json file containing the annotations (VIA compatible) are saved
-# 	in the output directory.'''
-
-# 	# Define relevant paths, load annotations and print usage note if the input is invalid.
-# 	for directory in sys.argv[1:]:
-# 		if os.path.exists(directory) and len(sys.argv) == 8:
-# 			pass
-# 		else:
-# 			print('INVALID INPUT \n Problem with: ' + directory + '\nUsage: ' + sys.argv[0] + ' reaction_scheme_dir structure_dir curved_arrow_structure_dir random_image_dir PubLayNet_image_dir output_dir PubLayNet_json')
-# 			return
-
-# 	reaction_scheme_dir = os.path.abspath(reaction_scheme_dir)
-# 	structure_dir = os.path.abspath(structure_dir)
-# 	curved_arrow_structure_dir = os.path.abspath(curved_arrow_structure_dir)
-# 	random_image_dir = os.path.abspath(random_image_dir)
-# 	output_dir = os.path.abspath(output_dir)
-# 	PubLayNet_image_dir = os.path.abspath(PubLayNet_image_dir)
-# 	PLN_annotations = load_PLN_annotations(PubLayNet_json, PubLayNet_image_dir)
-
-# 	starmap_iterable = []
-# 	for page in PLN_annotations.keys():
-# 		if page != 'categories':
-# 			path, filename = os.path.split(os.path.normpath(PLN_annotations[page]['file_name']))
-# 			categories = PLN_annotations['categories']
-# 			categories.append({'supercategory': '', 'id': 6, 'name': 'chemical_structure'})
-# 			categories.append({'supercategory': '', 'id': 7, 'name': 'chemical_ID'})
-# 			categories.append({'supercategory': '', 'id': 8, 'name': 'arrow'})
-# 			categories.append({'supercategory': '', 'id': 9, 'name': 'R_group_label'})
-# 			categories.append({'supercategory': '', 'id': 10, 'name': 'reaction_condition_label'})
-# 			categories.append({'supercategory': '', 'id': 11, 'name': 'chemical_structure_with_curved_arrows'})
-# 			starmap_iterable.append((filename, path, output_dir, PLN_annotations[page]['annotations'], structure_dir, curved_arrow_structure_dir, reaction_scheme_dir, random_image_dir, categories))
-
-# 	with Pool(20) as p:
-# 		metadata_dicts = p.starmap(coordination, starmap_iterable)
-    
-
-# 	metadata_dicts = [metadata_dict for metadata_dict in metadata_dicts if metadata_dict]
-# 	via_json = make_VIA_dict(metadata_dicts)
-# 	with open(os.path.join(output_dir, 'annotations.json'), 'w') as output:
-# 		json.dump(via_json, output)
 
 
-#DUPLICATES
+def worker_init(q):
+    # This function is mostly copy-pasted from StackOverflow
+    # Source: https://stackoverflow.com/questions/641420/how-should-i-log-while-using-multiprocessing-in-python
+    # all records from worker processes go to qh and then into q
+    qh = QueueHandler(q)
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO)
+    logger.addHandler(qh)
 
+
+def logger_init():
+    # Source: https://stackoverflow.com/questions/641420/how-should-i-log-while-using-multiprocessing-in-python
+    q = Queue()
+    # this is the handler for all log records
+    #handler = logging.StreamHandler()
+    handler = logging.FileHandler('dataset_creation_log.txt')
+    handler.setFormatter(logging.Formatter("%(levelname)s: %(asctime)s - %(process)s - %(message)s"))
+    # ql gets records from the queue and sends them to the handler
+    ql = QueueListener(q, handler)
+    ql.start()
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO)
+    # add the handler to the logger so records from this process are handled
+    logger.addHandler(handler)
+    return ql, q

@@ -15,6 +15,296 @@ from PIL import Image, ImageDraw, ImageFilter
 from RanDepict import RandomDepictor
 
 
+def get_polygon_coordinates(
+    image_array: np.array, debug: bool = False
+) -> Tuple[List[int], List[int]]:
+    """
+    Given a numpy ndarray that represents an image, this method defines a polygon around
+    the object in the image. We assume, that there only is one object in the image.
+    The idea is to define a small rectangle in the center of the object, that does not
+    enclose it.
+    Then, the amount of nodes that defines the rectangle is multiplied and the
+    'rectangle' is turned into a polygon that surrounds the object by pushing the nodes
+    that define the polygon out of its center. The process stops when no non-white
+    pixels are detected anymore on the polygon contours. Originally, we came up with
+    this procedure for the mask expansion in DECIMER Segmentation, but in the finally
+    published version, it was replaced for a different procedure (which could not
+    be applied here). But I am happy to be able to recycle my old code here. :)
+
+    Args:
+        image_array (np.array): _description_
+        debug (bool, optional): _description_. Defaults to False.
+
+    Returns:
+        Tuple[List[int], List[int]]: ([x_coordinates], [y_coordinates])
+    """
+    # Apply Gaussian Blur
+    mod_image = Image.fromarray(image_array)
+    mod_image = mod_image.filter(ImageFilter.GaussianBlur(radius=5))
+    mod_image = mod_image.convert('L')
+    if debug:
+        mod_image.save("annotation_illustration_blurred.png")
+    mod_image_array = np.asarray(mod_image)
+    # Define initial small rectangle and tenfold amount of nodes that define it.
+    polygon = initial_rectangle(mod_image_array)
+    if not polygon:
+        return False
+    polygon = factor_fold_nodes(polygon, 8)
+
+    # Expand the n-gon
+    polygon = bb_expansion_coordination(mod_image_array, polygon, debug=debug)
+
+    if type(polygon) == np.ndarray:
+        if debug:
+            im = Image.fromarray(image_array)
+            im = im.convert("RGB")
+            polygon = [(node[1], node[0]) for node in polygon]
+            draw = ImageDraw.Draw(im, "RGBA")
+            draw.polygon(polygon, fill=(0, 255, 0, 50))
+            draw.point(polygon, fill=(255, 0, 0, 255))
+            im.save("annotation_illustration_final.png")
+    return polygon
+
+
+def initial_rectangle(image_array: np.array,
+                      debug: bool = True) -> List[Tuple[int, int]]:
+    """
+    This function defines the initial rectangle for the polygon region definition. The
+    output of this function is a small rectangle which does not cover the whole object.
+
+    Args:
+        image_array (np.array): Array that represents the grayscale image
+
+    Returns:
+        List[Tuple[int, int]]: rectangle coordinates
+    """
+    non_white_y, non_white_x = np.where(image_array < 254)
+    try:
+        min_y = min(non_white_y)
+        max_y = max(non_white_y)
+        min_x = min(non_white_x)
+        max_x = max(non_white_x)
+    except ValueError:
+        return False
+    y_diff = max_y - min_y
+    x_diff = max_x - min_x
+    mid_x = (min_x + max_x) / 2
+    mid_y = (min_y + max_y) / 2
+    initial_rectangle = [
+        (mid_y, min_x + 1 / 8 * x_diff),
+        (max_y - 1 / 8 * y_diff, mid_x),
+        (mid_y, max_x - 1 / 8 * x_diff),
+        (min_y + 1 / 8 * y_diff, mid_x),
+    ]
+    if debug:
+        im = Image.fromarray(image_array)
+        im = im.convert("RGB")
+        polygon = [(node[1], node[0]) for node in initial_rectangle]
+        draw = ImageDraw.Draw(im, "RGBA")
+        draw.polygon(polygon, fill=(0, 255, 0, 50))
+        draw.point(polygon, fill=(255, 0, 0, 255))
+        im.save("annotation_illustration_initial_rectangle.png")
+    return initial_rectangle
+
+
+def bb_expansion_coordination(
+    image_array: np.array, original_bounding_box: np.array, debug: bool = False
+):
+    """
+    This function applies the bounding box expansion method to a given bounding box
+    with a given image and returns the expanded bounding box.
+
+    Args:
+        image_array (np.array): Input image
+        original_bounding_box (np.array): [[y0, x0], [y1, x1], ...]
+        debug (bool, optional): _description_. Defaults to False.
+
+    Returns:
+        np.array: expanded bounding box
+    """
+    parameter_combinations = [
+        # (200, 160, False),
+        # (100, 80, False),
+        # (50, 40, False),
+        (25, 20, False),
+        (25, 20, 5),
+    ]
+    for parameter_combination in parameter_combinations:
+        bounding_box = original_bounding_box.copy()
+        step_factor, step_limit, local_center_ratio = parameter_combination
+        nothing_on_the_edges = False
+        iterations = 0  # count iteration steps
+        # Check edges for pixels that are not white and expand the bounding box until
+        # there is nothing on the edges.
+        while nothing_on_the_edges is False:
+            nodes_to_be_changed = []
+            for node_index in range(len(bounding_box)):
+                # Define amount of steps we have to go in x-direction to get from node
+                # 1 to node 2
+                x_diff = bounding_box[node_index][0] - bounding_box[node_index - 1][0]
+                if x_diff == 0:
+                    bounding_box = adapt_x_values(
+                        bounding_box=bounding_box,
+                        node_index=node_index,
+                        image_shape=image_array.shape,
+                    )
+                #  number of steps we have to go in x-direction to get from node 1 to 2
+                x_diff = (
+                    bounding_box[node_index][0] - bounding_box[node_index - 1][0]
+                )
+                dist = euklidian_distance(
+                    bounding_box[node_index], bounding_box[node_index - 1]
+                )
+                # if dist > 0:
+                x_diff_range = set_x_diff_range(x_diff, dist, image_array)
+                # Go down the edge and check if there is something that is not white.
+                # If something was found, the corresponding nodes are saved.
+                for step in x_diff_range:
+                    x, y = define_next_pixel_to_check(
+                        bounding_box, node_index, step, image_shape=image_array.shape
+                    )
+                    # If there is something that is not white
+                    if image_array[x, y] < 240:
+                        nodes_to_be_changed.append(node_index)
+                        nodes_to_be_changed.append(node_index - 1)
+                        break
+            if iterations >= step_limit:
+                break
+            if nodes_to_be_changed == []:
+                nothing_on_the_edges = True
+                # If nothing was detected after 0 iterations, the initial rectangle was
+                # probably a failure.
+                if iterations == 0:
+                    # return bounding_box
+                    return False
+            else:
+                nodes_to_be_changed = set(nodes_to_be_changed)
+                bounding_box = expand_bounding_box(
+                    bounding_box,
+                    nodes_to_be_changed,
+                    step_factor,
+                    shape=image_array.shape,
+                    iterations=iterations,
+                    local_center_ratio=local_center_ratio,
+                )
+            iterations += 1
+            if debug:
+                print(
+                    "The bounding box is modified. Iteration No. " + str(iterations)
+                )
+                im = Image.fromarray(image_array)
+                im = im.convert("RGB")
+                # ImageDraw does not like np.arrays
+                polygon = [(node[1], node[0]) for node in bounding_box]
+                draw = ImageDraw.Draw(im, "RGBA")
+                draw.polygon(polygon, fill=(0, 255, 0, 50))
+                draw.point(polygon, fill=(255, 0, 0, 255))
+                im.save(f"annotation_illustration_{iterations}.png")
+        if iterations < step_limit:
+            return bounding_box
+    print("Bounding box expansion was not successful. Return original bounding box.")
+    return False
+
+
+def expand_bounding_box(
+    bounding_box: np.array,
+    nodes_to_be_changed: List,
+    step_factor: int,
+    shape: Tuple[int, int],
+    iterations: int,
+    local_center_ratio: bool = False,
+) -> np.array:
+    """
+    This function takes a list of nodes to be changed and modifies them by moving them
+    away from the bounding box center or a local center along a line between the node
+    and the center point.
+
+    Args:
+        bounding_box (np.array): [[y0, x0], [y1, x1], ...]
+        nodes_to_be_changed (List): [[y2, x2], [y3, x3], ...]
+        step_factor (int): the higher step_factor is, the smaller the steps are
+        shape (Tuple[int, int]): Image shape
+        iterations (int): iteration number
+        local_center_ratio (bool, optional): Defaults to False.
+
+    Returns:
+        np.array: _description_
+    """
+
+    # Every n_th time: use local center instead of global center, otherwise use global
+    # bounding box center
+    if not local_center_ratio or iterations % local_center_ratio != 0:
+        center = define_bounding_box_center(bounding_box)  # Define bounding box center
+
+    for node_index in nodes_to_be_changed:
+        if local_center_ratio and iterations % local_center_ratio == 0:
+            center = define_local_center(
+                bounding_box, node_index, n=10
+            )  # Define local center
+        else:
+            center = define_bounding_box_center(bounding_box)
+
+        # Define the axis along which we want to move the node
+        slope, intercept = define_edge_line(center, bounding_box[node_index])
+        step_size = define_stepsize(slope, shape, step_factor)
+        changed_node_1 = [
+            bounding_box[node_index][0] + step_size,
+            slope * (bounding_box[node_index][0] + step_size) + intercept,
+        ]
+        changed_node_2 = [
+            bounding_box[node_index][0] - step_size,
+            slope * (bounding_box[node_index][0] - step_size) + intercept,
+        ]
+        if euklidian_distance(changed_node_1, center) >= euklidian_distance(
+            changed_node_2, center
+        ):
+            bounding_box[node_index] = changed_node_1
+        else:
+            bounding_box[node_index] = changed_node_2
+    return bounding_box
+
+
+def factor_fold_nodes(bounding_box: np.array, factor: int):
+    """
+    A bounding box which is defined by n points is turned into a bounding box where
+    each edge between two nodes has $factor more equidistant nodes.
+
+    Args:
+        bounding_box (np.array): [[y0, x0], [y1, x1], ...]
+        factor (int): if a rectangle is given with a factor of 2, we get an octagon
+
+    Returns:
+        np.array: modified bounding box with added nodes
+    """
+    new_bounding_box = np.zeros((len(bounding_box) * factor, 2))
+    for node_index in range(len(bounding_box)):
+        # These if/else blocks avoid steps of zero in the arange.
+        if bounding_box[node_index][0] - bounding_box[node_index - 1][0]:
+            x_range = np.arange(
+                bounding_box[node_index - 1][0],
+                bounding_box[node_index][0],
+                (bounding_box[node_index][0] - bounding_box[node_index - 1][0])
+                / factor,
+            )
+        else:
+            x_range = np.full((1, factor), bounding_box[node_index][0]).flatten()
+        if (bounding_box[node_index][1] - bounding_box[node_index - 1][1]) != 0:
+            y_range = np.arange(
+                bounding_box[node_index - 1][1],
+                bounding_box[node_index][1],
+                (bounding_box[node_index][1] - bounding_box[node_index - 1][1])
+                / factor,
+            )
+        else:
+            y_range = np.full((1, factor), bounding_box[node_index][1]).flatten()
+        for index in range(len(x_range)):
+            new_bounding_box[node_index * factor + index] = [
+                x_range[index],
+                y_range[index],
+            ]
+    return new_bounding_box
+
+
 def define_bounding_box_center(bounding_box: np.array):
     """
     This function returns the center np.array([x,y]) of a given bounding
@@ -187,296 +477,6 @@ def adapt_x_values(bounding_box, node_index, image_shape):
         else:
             bounding_box[node_index][0] = bounding_box[node_index][0] + 1
     return bounding_box
-
-
-def factor_fold_nodes(bounding_box: np.array, factor: int):
-    """
-    A bounding box which is defined by n points is turned into a bounding box where
-    each edge between two nodes has $factor more equidistant nodes.
-
-    Args:
-        bounding_box (np.array): [[y0, x0], [y1, x1], ...]
-        factor (int): if a rectangle is given with a factor of 2, we get an octagon
-
-    Returns:
-        np.array: modified bounding box with added nodes
-    """
-    new_bounding_box = np.zeros((len(bounding_box) * factor, 2))
-    for node_index in range(len(bounding_box)):
-        # These if/else blocks avoid steps of zero in the arange.
-        if bounding_box[node_index][0] - bounding_box[node_index - 1][0]:
-            x_range = np.arange(
-                bounding_box[node_index - 1][0],
-                bounding_box[node_index][0],
-                (bounding_box[node_index][0] - bounding_box[node_index - 1][0])
-                / factor,
-            )
-        else:
-            x_range = np.full((1, factor), bounding_box[node_index][0]).flatten()
-        if (bounding_box[node_index][1] - bounding_box[node_index - 1][1]) != 0:
-            y_range = np.arange(
-                bounding_box[node_index - 1][1],
-                bounding_box[node_index][1],
-                (bounding_box[node_index][1] - bounding_box[node_index - 1][1])
-                / factor,
-            )
-        else:
-            y_range = np.full((1, factor), bounding_box[node_index][1]).flatten()
-        for index in range(len(x_range)):
-            new_bounding_box[node_index * factor + index] = [
-                x_range[index],
-                y_range[index],
-            ]
-    return new_bounding_box
-
-
-def expand_bounding_box(
-    bounding_box: np.array,
-    nodes_to_be_changed: List,
-    step_factor: int,
-    shape: Tuple[int, int],
-    iterations: int,
-    local_center_ratio: bool = False,
-) -> np.array:
-    """
-    This function takes a list of nodes to be changed and modifies them by moving them
-    away from the bounding box center or a local center along a line between the node
-    and the center point.
-
-    Args:
-        bounding_box (np.array): [[y0, x0], [y1, x1], ...]
-        nodes_to_be_changed (List): [[y2, x2], [y3, x3], ...]
-        step_factor (int): the higher step_factor is, the smaller the steps are
-        shape (Tuple[int, int]): Image shape
-        iterations (int): iteration number
-        local_center_ratio (bool, optional): Defaults to False.
-
-    Returns:
-        np.array: _description_
-    """
-
-    # Every n_th time: use local center instead of global center, otherwise use global
-    # bounding box center
-    if not local_center_ratio or iterations % local_center_ratio != 0:
-        center = define_bounding_box_center(bounding_box)  # Define bounding box center
-
-    for node_index in nodes_to_be_changed:
-        if local_center_ratio and iterations % local_center_ratio == 0:
-            center = define_local_center(
-                bounding_box, node_index, n=10
-            )  # Define local center
-        else:
-            center = define_bounding_box_center(bounding_box)
-
-        # Define the axis along which we want to move the node
-        slope, intercept = define_edge_line(center, bounding_box[node_index])
-        step_size = define_stepsize(slope, shape, step_factor)
-        changed_node_1 = [
-            bounding_box[node_index][0] + step_size,
-            slope * (bounding_box[node_index][0] + step_size) + intercept,
-        ]
-        changed_node_2 = [
-            bounding_box[node_index][0] - step_size,
-            slope * (bounding_box[node_index][0] - step_size) + intercept,
-        ]
-        if euklidian_distance(changed_node_1, center) >= euklidian_distance(
-            changed_node_2, center
-        ):
-            bounding_box[node_index] = changed_node_1
-        else:
-            bounding_box[node_index] = changed_node_2
-    return bounding_box
-
-
-def bb_expansion_coordination(
-    image_array: np.array, original_bounding_box: np.array, debug: bool = False
-):
-    """
-    This function applies the bounding box expansion method to a given bounding box
-    with a given image and returns the expanded bounding box.
-
-    Args:
-        image_array (np.array): Input image
-        original_bounding_box (np.array): [[y0, x0], [y1, x1], ...]
-        debug (bool, optional): _description_. Defaults to False.
-
-    Returns:
-        np.array: expanded bounding box
-    """
-    parameter_combinations = [
-        # (200, 160, False),
-        # (100, 80, False),
-        # (50, 40, False),
-        (25, 20, False),
-        (25, 20, 5),
-    ]
-    for parameter_combination in parameter_combinations:
-        bounding_box = original_bounding_box.copy()
-        step_factor, step_limit, local_center_ratio = parameter_combination
-        nothing_on_the_edges = False
-        iterations = 0  # count iteration steps
-        # Check edges for pixels that are not white and expand the bounding box until
-        # there is nothing on the edges.
-        while nothing_on_the_edges is False:
-            nodes_to_be_changed = []
-            for node_index in range(len(bounding_box)):
-                # Define amount of steps we have to go in x-direction to get from node
-                # 1 to node 2
-                x_diff = bounding_box[node_index][0] - bounding_box[node_index - 1][0]
-                if x_diff == 0:
-                    bounding_box = adapt_x_values(
-                        bounding_box=bounding_box,
-                        node_index=node_index,
-                        image_shape=image_array.shape,
-                    )
-                #  number of steps we have to go in x-direction to get from node 1 to 2
-                x_diff = (
-                    bounding_box[node_index][0] - bounding_box[node_index - 1][0]
-                )
-                dist = euklidian_distance(
-                    bounding_box[node_index], bounding_box[node_index - 1]
-                )
-                # if dist > 0:
-                x_diff_range = set_x_diff_range(x_diff, dist, image_array)
-                # Go down the edge and check if there is something that is not white.
-                # If something was found, the corresponding nodes are saved.
-                for step in x_diff_range:
-                    x, y = define_next_pixel_to_check(
-                        bounding_box, node_index, step, image_shape=image_array.shape
-                    )
-                    # If there is something that is not white
-                    if image_array[x, y] < 240:
-                        nodes_to_be_changed.append(node_index)
-                        nodes_to_be_changed.append(node_index - 1)
-                        break
-            if iterations >= step_limit:
-                break
-            if nodes_to_be_changed == []:
-                nothing_on_the_edges = True
-                # If nothing was detected after 0 iterations, the initial rectangle was
-                # probably a failure.
-                if iterations == 0:
-                    # return bounding_box
-                    return False
-            else:
-                nodes_to_be_changed = set(nodes_to_be_changed)
-                bounding_box = expand_bounding_box(
-                    bounding_box,
-                    nodes_to_be_changed,
-                    step_factor,
-                    shape=image_array.shape,
-                    iterations=iterations,
-                    local_center_ratio=local_center_ratio,
-                )
-            iterations += 1
-            if debug:
-                print(
-                    "The bounding box is modified. Iteration No. " + str(iterations)
-                )
-                im = Image.fromarray(image_array)
-                im = im.convert("RGB")
-                # ImageDraw does not like np.arrays
-                polygon = [(node[1], node[0]) for node in bounding_box]
-                draw = ImageDraw.Draw(im, "RGBA")
-                draw.polygon(polygon, fill=(0, 255, 0, 50))
-                draw.point(polygon, fill=(255, 0, 0, 255))
-                im.save(f"annotation_illustration_{iterations}.png")
-        if iterations < step_limit:
-            return bounding_box
-    print("Bounding box expansion was not successful. Return original bounding box.")
-    return False
-
-
-def initial_rectangle(image_array: np.array,
-                      debug: bool = True) -> List[Tuple[int, int]]:
-    """
-    This function defines the initial rectangle for the polygon region definition. The
-    output of this function is a small rectangle which does not cover the whole object.
-
-    Args:
-        image_array (np.array): Array that represents the grayscale image
-
-    Returns:
-        List[Tuple[int, int]]: rectangle coordinates
-    """
-    non_white_y, non_white_x = np.where(image_array < 254)
-    try:
-        min_y = min(non_white_y)
-        max_y = max(non_white_y)
-        min_x = min(non_white_x)
-        max_x = max(non_white_x)
-    except ValueError:
-        return False
-    y_diff = max_y - min_y
-    x_diff = max_x - min_x
-    mid_x = (min_x + max_x) / 2
-    mid_y = (min_y + max_y) / 2
-    initial_rectangle = [
-        (mid_y, min_x + 1 / 8 * x_diff),
-        (max_y - 1 / 8 * y_diff, mid_x),
-        (mid_y, max_x - 1 / 8 * x_diff),
-        (min_y + 1 / 8 * y_diff, mid_x),
-    ]
-    if debug:
-        im = Image.fromarray(image_array)
-        im = im.convert("RGB")
-        polygon = [(node[1], node[0]) for node in initial_rectangle]
-        draw = ImageDraw.Draw(im, "RGBA")
-        draw.polygon(polygon, fill=(0, 255, 0, 50))
-        draw.point(polygon, fill=(255, 0, 0, 255))
-        im.save("annotation_illustration_initial_rectangle.png")
-    return initial_rectangle
-
-
-def get_polygon_coordinates(
-    image_array: np.array, debug: bool = False
-) -> Tuple[List[int], List[int]]:
-    """
-    Given a numpy ndarray that represents an image, this method defines a polygon around
-    the object in the image. We assume, that there only is one object in the image.
-    The idea is to define a small rectangle in the center of the object, that does not
-    enclose it.
-    Then, the amount of nodes that defines the rectangle is multiplied and the
-    'rectangle' is turned into a polygon that surrounds the object by pushing the nodes
-    that define the polygon out of its center. The process stops when no non-white
-    pixels are detected anymore on the polygon contours. Originally, we came up with
-    this procedure for the mask expansion in DECIMER Segmentation, but in the finally
-    published version, it was replaced for a different procedure (which could not
-    be applied here). But I am happy to be able to recycle my old code here. :)
-
-    Args:
-        image_array (np.array): _description_
-        debug (bool, optional): _description_. Defaults to False.
-
-    Returns:
-        Tuple[List[int], List[int]]: ([x_coordinates], [y_coordinates])
-    """
-    # Apply Gaussian Blur
-    mod_image = Image.fromarray(image_array)
-    mod_image = mod_image.filter(ImageFilter.GaussianBlur(radius=5))
-    mod_image = mod_image.convert('L')
-    if debug:
-        mod_image.save("annotation_illustration_blurred.png")
-    mod_image_array = np.asarray(mod_image)
-    # Define initial small rectangle and tenfold amount of nodes that define it.
-    polygon = initial_rectangle(mod_image_array)
-    if not polygon:
-        return False
-    polygon = factor_fold_nodes(polygon, 8)
-
-    # Expand the n-gon
-    polygon = bb_expansion_coordination(mod_image_array, polygon, debug=debug)
-
-    if type(polygon) == np.ndarray:
-        if debug:
-            im = Image.fromarray(image_array)
-            im = im.convert("RGB")
-            polygon = [(node[1], node[0]) for node in polygon]
-            draw = ImageDraw.Draw(im, "RGBA")
-            draw.polygon(polygon, fill=(0, 255, 0, 50))
-            draw.point(polygon, fill=(255, 0, 0, 255))
-            im.save("annotation_illustration_final.png")
-    return polygon
 
 
 def main():

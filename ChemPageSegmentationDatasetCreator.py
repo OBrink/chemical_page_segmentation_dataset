@@ -3,21 +3,21 @@
 
 
 import os
-import json
 from typing import List, Tuple, Dict
 import numpy as np
-from PIL import Image, ImageFont, ImageDraw, ImageFilter, ImageStat
+from PIL import Image, ImageFont, ImageDraw, ImageStat
 import random
 from copy import deepcopy
 from itertools import cycle
 import logging
-from logging.handlers import QueueHandler, QueueListener
-from multiprocessing import Pool, set_start_method, Queue
+# from multiprocessing import Pool, set_start_method, Queue
 from imantics import Polygons
 from skimage import morphology
-from polygon_bounding_box_determination import *
+from polygon_bounding_box_determination import get_polygon_coordinates
 import RanDepict
-from jpype import startJVM, getDefaultJVMPath, isJVMStarted
+
+from annotation_utils import load_PLN_annotations
+# from jpype import startJVM, getDefaultJVMPath, isJVMStarted
 
 
 class ChemPageSegmentationDatasetCreator:
@@ -27,7 +27,7 @@ class ChemPageSegmentationDatasetCreator:
     """
 
     def __init__(
-        self, smiles_list, load_PLN_annotations=True, PLN_annotation_number: int = False
+        self, smiles_list, load_PLN=True, PLN_annotation_number: int = False
     ):
         self.depictor = RanDepict.RandomDepictor()
         self.depictor.ID_label_text
@@ -50,7 +50,7 @@ class ChemPageSegmentationDatasetCreator:
         )
         # Load PLN annotations and add custom categories; may take 1-2 min
         if load_PLN_annotations:
-            self.PLN_annotations = self.load_PLN_annotations()
+            self.PLN_annotations = load_PLN_annotations()
             categories = self.PLN_annotations["categories"]
             categories.append(
                 {"supercategory": "", "id": 6, "name": "chemical_structure"}
@@ -87,6 +87,91 @@ class ChemPageSegmentationDatasetCreator:
         else:
             self.PLN_annotations = None
             self.annotation_iterator = None
+
+    def create_chemical_page(self,):
+        """
+        This function returns a PubLayNet page with inserted chemical elements and the
+        regions dict which includes the positions/annotations.
+
+        Returns:
+            PIL.Image: Modified PubLayNet image
+            Dict: Annotations of elements in the image
+        """
+        place_to_paste = False
+        while not place_to_paste:
+            page_annotation = next(self.annotation_iterator)
+            # Open PubLayNet Page Image
+            image = Image.open(page_annotation["file_name"])
+            image = deepcopy(np.asarray(image))
+            modified_annotations = []
+            figure_regions = []
+
+            # Make sure only pages that contain a figure or a table are processed.
+            category_IDs = [
+                annotation["category_id"] - 1
+                for annotation in page_annotation["annotations"]
+            ]
+            found_categories = [
+                self.PLN_annotations["categories"][category_ID]["name"]
+                for category_ID in category_IDs
+            ]
+            if "figure" in found_categories:
+                place_to_paste = True
+        # Replace figures with white space
+        for annotation in page_annotation["annotations"]:
+            category_ID = annotation["category_id"] - 1
+            category = self.PLN_annotations["categories"][category_ID]["name"]
+            # Leave every element that is not a figure/list untouched
+            if category not in ["figure", "list"]:
+                modified_annotations.append(annotation)
+            else:
+                # Delete Figures in images
+                polygon = annotation["segmentation"][0]
+                polygon_y = [int(polygon[n]) for n in range(len(polygon)) if n % 2 != 0]
+                polygon_x = [int(polygon[n]) for n in range(len(polygon)) if n % 2 == 0]
+                figure_regions.append(
+                    (min(polygon_x), max(polygon_y), max(polygon_x), min(polygon_y))
+                )
+                for x in range(min(polygon_x) - 2, max(polygon_x) + 2):
+                    for y in range(min(polygon_y) - 2, max(polygon_y) + 2):
+                        image[y, x] = [255, 255, 255]
+
+        #  Paste new elements
+        image = Image.fromarray(image)
+        for region in figure_regions:
+
+            # Region boundaries
+            region = [round(coord) for coord in region]
+            min_x, max_y, max_x, min_y = region
+            # Don't paste reaction schemes into tiny regions
+            if max_x - min_x > 200 and max_y - min_y > 200:
+                paste_im_type = random.choice(["structure", "scheme", "random"])
+            else:
+                paste_im_type = random.choice(["structure", "random"])
+            # Determine how many chemical structures should be placed in the region.
+            if paste_im_type == "structure":
+                images_vertical, images_horizontal = self.determine_images_per_region(
+                    region
+                )
+            else:
+                # We don't want a grid of reaction schemes or random images.
+                images_vertical, images_horizontal = (1, 1)
+
+            image, pasted_structure_info = self.paste_chemical_contents(
+                image,
+                region,
+                images_vertical,
+                images_horizontal,
+                paste_im_type=paste_im_type,
+            )
+            modified_annotations += pasted_structure_info
+
+        modified_annotations = self.make_img_metadata_dict_from_PLN_annotations(
+            page_annotation["file_name"],
+            modified_annotations,
+            self.PLN_annotations["categories"],
+        )
+        return image, modified_annotations
 
     def pad_image(self, pil_image: Image, factor: float):
         """
@@ -229,93 +314,6 @@ class ChemPageSegmentationDatasetCreator:
             im.show()
         return im, label_bounding_box
 
-    def make_region_dict(
-        self, type: str, polygon: np.ndarray, smiles: str = False
-    ) -> Dict:
-        """
-        In order to avoid redundant code in make_img_metadata_dict,
-        this function creates the dict that holds the information
-        for one single region. It expects a type (annotation string
-        for the region) and an array containing tuples [(y0, x0), (y1, x1)...]
-
-        Args:
-            type (str): type description (annotated class)
-            polygon (np.ndarray): region annotation ([(y0, x0), (y1, x1)...])_
-            smiles (str, optional): SMILES representation of chemical structure
-                                    Defaults to False.
-
-        Returns:
-            Dict: VIA-compatible region dict
-        """
-        region_dict = {}
-        region_dict["region_attributes"] = {}
-        region_dict["region_attributes"]["type"] = type
-        if smiles:
-            region_dict["smiles"] = smiles
-        region_dict["shape_attributes"] = {}
-        region_dict["shape_attributes"]["name"] = "polygon"
-        y_coordinates = [int(node[0]) for node in polygon]
-        x_coordinates = [int(node[1]) for node in polygon]
-        region_dict["shape_attributes"]["all_points_x"] = list(x_coordinates)
-        region_dict["shape_attributes"]["all_points_y"] = list(y_coordinates)
-        return region_dict
-
-    def make_img_metadata_dict(
-        self,
-        image_name: str,
-        chemical_structure_polygon: np.ndarray,
-        label_bounding_box=False,
-    ) -> Dict:
-        """
-        This function takes the name of an image, the coordinates of the
-        chemical structure polygon and (if it exists) the bounding box of
-        the ID label and creates the _via_img_metadata subdictionary for
-        the VIA input.
-
-        Args:
-            image_name (str)
-            chemical_structure_polygon (np.ndarray): region annotation
-                                                     [(y0, x0), (y1, x1)...]
-            label_bounding_box (bool): Label region. Defaults to False
-
-        Returns:
-            Dict: VIA-compatible metadata dict
-        """
-        metadata_dict = {}
-        metadata_dict["filename"] = image_name
-        # metadata_dict['size'] = int(os.stat(os.path.join(output_dir,
-        #                                                  image_name)).st_size)
-        metadata_dict["regions"] = []
-        # Add dict for first region which contains chemical structure
-        struc_region_dict = self.make_region_dict(
-            "chemical_structure", chemical_structure_polygon
-        )
-        metadata_dict["regions"].append(struc_region_dict)
-        # If there is an ID label: Add dict for the label region
-        if label_bounding_box:
-            label_bounding_box = [(node[1], node[0]) for node in label_bounding_box]
-            ID_region_dict = self.make_region_dict("chemical_ID", label_bounding_box)
-            metadata_dict["regions"].append(ID_region_dict)
-        return metadata_dict
-
-    def make_VIA_dict(self, metadata_dicts: List[Dict],) -> Dict:
-        """
-        This function takes a list of Dicts with the region information
-        and returns a dict that can be opened using VIA when it is saved
-        as a json file.
-
-        Args:
-            metadata_dicts (List[Dict]): List of dictionaries (as returned
-                                         by make_img_metadata_dict())
-
-        Returns:
-            Dict: VIA dict (can be dumped in a file and be read by VIA)
-        """
-        VIA_dict = {}
-        for metadata_dict in metadata_dicts:
-            VIA_dict[metadata_dict["filename"]] = metadata_dict
-        return VIA_dict
-
     def pick_random_colour(self, black=False) -> Tuple[int]:
         """
         This function returns a random tuple with a colour for an RGBA image
@@ -348,7 +346,7 @@ class ChemPageSegmentationDatasetCreator:
     def modify_colours(self, image: Image, blacken=False) -> Image:
         """
         This function takes a Pillow Image, makes white pixels transparent,
-        gives every other pixel a given new colour and returns the Image.        
+        gives every other pixel a given new colour and returns the Image.
 
         Args:
             image (Image): input image
@@ -376,66 +374,6 @@ class ChemPageSegmentationDatasetCreator:
                 newData.append(ch)
         image.putdata(newData)
         return image.convert("RGB")
-
-    def add_arrows_to_structure(
-        self, image: Image, arrow_dir: str, polygon: np.ndarray
-    ) -> Image:
-        """
-        This function takes an image of a chemical structure and adds between
-        4 and 20 curved arrows in random positions in the chemical structure.
-        It needs the polygon coordinates around the chemical structure to make
-        sure that the arrows are in the structure.
-
-        Args:
-            image (Image): structure depiction
-            arrow_dir (str): path of directory with arrow images
-            polygon (np.ndarray): structure region annotation
-                                  [(y0, x0), (y1, x1)...]
-
-        Returns:
-            Image: structure depiction with arrows
-        """
-        orig_image = deepcopy(image)
-        # Determine area where arrows are pasted.
-        x_coordinates = [int(node[1]) for node in polygon]
-        y_coordinates = [int(node[0]) for node in polygon]
-        x_min = min(x_coordinates)
-        y_min = min(y_coordinates)
-        x_max = max(x_coordinates)
-        y_max = max(y_coordinates)
-        # Open random amount of arrow images, resize and rotate them randomly
-        # and paste them randomly in the chemical structure depiction
-        for _ in range(random.choice(range(4, 15))):
-            resize_method = random.choice([3, 4, 5])
-            arrow_fname = random.choice(os.listdir(arrow_dir))
-            arrow_image = Image.open(os.path.join(arrow_dir, arrow_fname))
-            arrow_image = self.modify_colours(arrow_image)
-            mod_arr_shape = (
-                int((x_max - x_min) / random.choice(range(3, 6))),
-                int((y_max - y_min) / random.choice(range(3, 6))),
-            )
-            arrow_image = arrow_image.resize(mod_arr_shape, resample=resize_method)
-            arrow_image = arrow_image.rotate(
-                random.choice(range(360)), resample=Image.BICUBIC, expand=True
-            )
-            # Try different positions with the condition that the arrows are
-            # overlapping with non-white pixels (the structure)
-            for _ in range(50):
-                x_position = random.choice(range(x_min, x_max - mod_arr_shape[0]))
-                y_position = random.choice(range(y_min, y_max - mod_arr_shape[1]))
-                paste_region = orig_image.crop(
-                    (
-                        x_position,
-                        y_position,
-                        x_position + mod_arr_shape[0],
-                        y_position + mod_arr_shape[1],
-                    )
-                )
-                mean = ImageStat.Stat(paste_region).mean
-                if sum(mean) / len(mean) < 250:
-                    image.paste(arrow_image, (x_position, y_position), arrow_image)
-                    break
-        return image
 
     def adapt_coordinates(
         self,
@@ -565,14 +503,12 @@ class ChemPageSegmentationDatasetCreator:
         # Depict chemical structure
         image = self.depictor.random_depiction(smiles, shape)
         image = Image.fromarray(image)
-        # Get coordinates of polygon around chemical structure
-        blurred_image = image.filter(ImageFilter.GaussianBlur(radius=5))
-        blurred_image = self.pad_image(blurred_image, factor=1.8)
-        polygon = polygon_coordinates(
-            image_array=np.asarray(blurred_image), debug=False
-        )
-        # Pad the non-blurred image
+        # Add some padding
         image = self.pad_image(image, factor=1.8)
+        # Get coordinates of polygon around chemical structure
+        polygon = get_polygon_coordinates(
+            image_array=np.asarray(image), debug=False
+        )
         if type(polygon) == np.ndarray:
             # Add a chemical ID label to the image
             if label:
@@ -638,12 +574,11 @@ class ChemPageSegmentationDatasetCreator:
             return
         return True
 
-    def paste_it(
+    def paste_images(
         self,
         image: Image,
         paste_positions: List[Tuple[int, int]],
         paste_images: List,
-        annotations: List[Dict],
     ) -> Image:
         """
         This function takes an empty image (PIL.Image), a list of paste positions
@@ -734,15 +669,15 @@ class ChemPageSegmentationDatasetCreator:
             if len(annotation) != 1:
                 image = morphology.binary_dilation(image, morphology.square(10))
                 annotation = Polygons.from_mask(image).points
-            # swap x and y around (numpy and Pillow don't agree here, this way, it is consistent)
+            # swap x and y (numpy and PIL don't agree here. This way, it is consistent)
             annotation = [(x[1], x[0]) for x in annotation[0]]
             region_dicts.append([self.make_region_dict("arrow", annotation)])
         return region_dicts
 
     def is_diagonal_arrow(self, arrow_bbox: List[Tuple[int, int]]) -> bool:
         """
-        This function takes the bounding box of and arrow and checks whether or not
-        the arrow is diagonal.
+        This function takes an arrow bounding box of and arrow and checks whether or
+        not the arrow is diagonal based on the aspect of the image.
 
         Args:
             arrow_bbox (List[Tuple[int,int]])
@@ -768,7 +703,7 @@ class ChemPageSegmentationDatasetCreator:
         label type ('r_group' or 'reaction_condition'). If label type is
         'reaction_condition', arrow_bboxes [(x0,y0), [x1,y1)...] must also be given
         It generates random labels that look like the labels and inserts them at random
-        positions (under the condition that there is 
+        positions (under the condition that there is
         no overlap with other objects in the image.). It returns the modified image
         and the region dicts for the labels.
 
@@ -882,7 +817,7 @@ class ChemPageSegmentationDatasetCreator:
                                 (bbox[1], bbox[0]),
                                 (bbox[1], bbox[2]),
                                 (bbox[3], bbox[2]),
-                            ] 
+                            ]
                             if label_type == "r_group":
                                 region_dicts.append(
                                     [self.make_region_dict("R_group_label", text_bbox)]
@@ -1010,7 +945,10 @@ class ChemPageSegmentationDatasetCreator:
             paste_images = [structure_images[0], structure_images[1]]
             arrow_image_list = [arrow_image]
             paste_images += arrow_image_list
-            image = self.paste_it(image, paste_positions, paste_images, False)
+            image = self.paste_chemical_contents(image,
+                                                 paste_positions,
+                                                 paste_images,
+                                                 False)
             annotated_regions += self.determine_arrow_annotations([arrow_image])
             annotated_regions = self.modify_annotations(
                 annotated_regions, paste_positions
@@ -1062,7 +1000,10 @@ class ChemPageSegmentationDatasetCreator:
                     arrow_image,
                 ]
                 paste_images += arrow_image_list
-                image = self.paste_it(image, paste_positions, paste_images, False)
+                image = self.paste_chemical_contents(image,
+                                                     paste_positions,
+                                                     paste_images,
+                                                     False)
                 annotated_regions += self.determine_arrow_annotations(
                     [
                         arrow_image.rotate(
@@ -1112,13 +1053,18 @@ class ChemPageSegmentationDatasetCreator:
                     structure_images[2],
                 ]
                 arrow_image_list = [
-                    arrow_image.rotate(90, expand=True, fillcolor=(255, 255, 255, 255)),
+                    arrow_image.rotate(90,
+                                       expand=True,
+                                       fillcolor=(255, 255, 255, 255)),
                     arrow_image.rotate(
                         270, expand=True, fillcolor=(255, 255, 255, 255)
                     ),
                 ]
                 paste_images += arrow_image_list
-                image = self.paste_it(image, paste_positions, paste_images, False)
+                image = self.paste_chemical_contents(image,
+                                                     paste_positions,
+                                                     paste_images,
+                                                     False)
                 annotated_regions += self.determine_arrow_annotations(
                     [
                         arrow_image.rotate(
@@ -1331,7 +1277,10 @@ class ChemPageSegmentationDatasetCreator:
                 annotated_regions = self.modify_annotations(
                     annotated_regions, paste_positions
                 )
-            image = self.paste_it(image, paste_positions, paste_images, False)
+            image = self.paste_chemical_contents(image,
+                                                 paste_positions,
+                                                 paste_images,
+                                                 False)
 
         if len(structure_images) == 7:
             size = (
@@ -1485,7 +1434,7 @@ class ChemPageSegmentationDatasetCreator:
             annotated_regions = self.modify_annotations(
                 annotated_regions, paste_positions
             )
-            image = self.paste_it(image, paste_positions, paste_images, False)
+            image = self.paste_images(image, paste_positions, paste_images)
 
         # Insert labels and update annotations
         if random.choice([True, False]):
@@ -1500,39 +1449,6 @@ class ChemPageSegmentationDatasetCreator:
             )
             annotated_regions += reaction_condition_regions
         return image.convert("RGB"), annotated_regions
-
-    def load_PLN_annotations(self,) -> Dict:
-        """
-        This function loads the PubLayNet annotation dictionary and returns them in a
-        clear format.The returned dictionary only contain entries where the images
-        actually exist locally in PLN_image_directory.
-        (--> No problems if only a part of PubLayNet was downloaded.)
-
-        Args:
-            PLN_json_path (str): Path of PubLayNet annotation file
-            PLN_image_dir ([type]): Path of directory with PubLayNet images
-
-        Returns:
-            Dict
-        """
-        PLN_json_path = os.path.join(self.PLN_dir, "train.json")
-        PLN_image_dir = os.path.join(self.PLN_dir, "train")
-        # PLN_json_path = os.path.join(self.PLN_dir, 'val.json')
-        # PLN_image_dir = os.path.join(self.PLN_dir, 'val')
-        with open(PLN_json_path) as annotation_file:
-            PLN_annotations = json.load(annotation_file)
-        PLN_dict = {}
-        PLN_dict["categories"] = PLN_annotations["categories"]
-        for image in PLN_annotations["images"]:
-            if os.path.exists(os.path.join(PLN_image_dir, image["file_name"])):
-                PLN_dict[image["id"]] = {
-                    "file_name": os.path.join(PLN_image_dir, image["file_name"]),
-                    "annotations": [],
-                }
-        for ann in PLN_annotations["annotations"]:
-            if ann["image_id"] in PLN_dict.keys():
-                PLN_dict[ann["image_id"]]["annotations"].append(ann)
-        return PLN_dict
 
     def fix_polygon_coordinates(
         self, x_coords: List[int], y_coords: List[int], shape: Tuple[int]
@@ -1561,68 +1477,11 @@ class ChemPageSegmentationDatasetCreator:
                 y_coords[n] = shape[1] - 1
         return x_coords, y_coords
 
-    def modify_annotations_PLN(
-        self,
-        # annotation_dir: str,
-        # image_name: str,
-        regions_dicts: List[Dict],
-        old_image_shape: Tuple[int],
-        new_image_shape: Tuple[int],
-        paste_anchor: Tuple[int],
-    ) -> Dict:
-        """
-        This function takes information about the region where an image (structure,
-        scheme ) has been inserted. 
-        The coordinates of the regions are modified according to the resizing of the
-        image and the position on the page where it has been pasted.
-
-        Args:
-            regions_dict (List[Dict])
-            old_image_shape (Tuple[int])
-            new_image_shape (Tuple[int])
-            paste_anchor (Tuple[int])
-
-        Returns:
-            Dict
-        """
-        modified_annotations = []
-        if regions_dicts:
-            for region in regions_dicts:
-                categories = {
-                    "chemical_structure": 6,
-                    "chemical_ID": 7,
-                    "arrow": 8,
-                    "R_group_label": 9,
-                    "reaction_condition_label": 10,
-                    "chemical_structure_with_curved_arrows": 11,
-                }
-                category = region["region_attributes"]["type"]
-                category_ID = categories[category]
-
-                # Load coordinates and alter them according to the resizing
-                x_coords = region["shape_attributes"]["all_points_x"]
-                y_coords = region["shape_attributes"]["all_points_y"]
-                x_coords, y_coords = self.fix_polygon_coordinates(x_coords,
-                                                                  y_coords,
-                                                                  old_image_shape)
-                x_ratio = new_image_shape[0] / old_image_shape[0]
-                y_ratio = new_image_shape[1] / old_image_shape[1]
-                x_coords = [x_ratio * x_coord + paste_anchor[0] for x_coord in x_coords]
-                y_coords = [y_ratio * y_coord + paste_anchor[1] for y_coord in y_coords]
-                # Get the coordinates into the PLN annotation format
-                # ([x0, y0, x1, y1, ..., xn, yn])
-                modified_annotation = {"segmentation": [[]], "category_id": category_ID}
-                for n in range(len(x_coords)):
-                    modified_annotation["segmentation"][0].append(x_coords[n])
-                    modified_annotation["segmentation"][0].append(y_coords[n])
-                modified_annotations.append(modified_annotation)
-        return modified_annotations
-
     def determine_images_per_region(self, region: Tuple[int]) -> Tuple[int, int]:
         """
         This function takes the bounding box coordinates of a region and returns
         two integers which indicate how many chemical structure depictions should be
-        added (int1: vertical, int2: horizontal). The returned values depend on 
+        added (int1: vertical, int2: horizontal). The returned values depend on
         the region size and a random influence.
 
         Args:
@@ -1643,7 +1502,7 @@ class ChemPageSegmentationDatasetCreator:
             vertical_int = 1
         return vertical_int, horizontal_int
 
-    def paste_images(
+    def paste_chemical_contents(
         self,
         image: Image,
         region: Tuple[int],
@@ -1653,12 +1512,12 @@ class ChemPageSegmentationDatasetCreator:
     ):
         """
         This function takes a page image (PIL.Image), the region where the structure
-        depictions are supposed to be pasted into and the amount of images per row 
+        depictions are supposed to be pasted into and the amount of images per row
         (horizontal_image) and per column (vertical_images).
         It pastes the given amount of depictions into the region and returns the image
         and list of tuples that contains the path(s), names, original shapes, modified
         shapes and the paste coordinates (min_y, min_x) of the pasted images for the
-        annotation creation. If binarise_half is set True, 50% of the pasted images 
+        annotation creation. If binarise_half is set True, 50% of the pasted images
         are binarised
 
         Args:
@@ -1743,8 +1602,9 @@ class ChemPageSegmentationDatasetCreator:
                 # Binarize half of the images if desired
                 if binarise_half:
                     if random.choice([True, False]):
-                        fn = lambda x: 255 if x > 150 else 0
-                        paste_im = paste_im.convert("L").point(fn, mode="1")
+                        paste_im = paste_im.convert("L")
+                        paste_im = paste_im.point(lambda x: 255 if x > 150 else 0,
+                                                  mode="1")
                 image.paste(paste_im, (min_x, min_y))
             # Modify annotations according to resized pasted image
             modified_chem_annotations = self.modify_annotations_PLN(
@@ -1753,128 +1613,9 @@ class ChemPageSegmentationDatasetCreator:
             pasted_element_annotation += modified_chem_annotations
         return image, pasted_element_annotation
 
-    def create_chemical_page(self,):
-        """
-        This function returns a PubLayNet page with inserted chemical elements and the
-        regions dict which includes the positions/annotations.
-
-        Returns:
-            PIL.Image: Modified PubLayNet image
-            Dict: Annotations of elements in the image
-        """
-        place_to_paste = False
-        while not place_to_paste:
-            page_annotation = next(self.annotation_iterator)
-            # Open PubLayNet Page Image
-            image = Image.open(page_annotation["file_name"])
-            image = deepcopy(np.asarray(image))
-            modified_annotations = []
-            figure_regions = []
-
-            # Make sure only pages that contain a figure or a table are processed.
-            category_IDs = [
-                annotation["category_id"] - 1
-                for annotation in page_annotation["annotations"]
-            ]
-            found_categories = [
-                self.PLN_annotations["categories"][category_ID]["name"]
-                for category_ID in category_IDs
-            ]
-            if "figure" in found_categories:
-                place_to_paste = True
-            # if 'table' in found_categories:
-            #    place_to_paste = True
-        # Replace figures with white space
-        for annotation in page_annotation["annotations"]:
-            category_ID = annotation["category_id"] - 1
-            category = self.PLN_annotations["categories"][category_ID]["name"]
-            # Leave every element that is not a figure/list untouched
-            if category not in ["figure", "list"]:
-                modified_annotations.append(annotation)
-            else:
-                # Delete Figures in images
-                polygon = annotation["segmentation"][0]
-                polygon_y = [int(polygon[n]) for n in range(len(polygon)) if n % 2 != 0]
-                polygon_x = [int(polygon[n]) for n in range(len(polygon)) if n % 2 == 0]
-                figure_regions.append(
-                    (min(polygon_x), max(polygon_y), max(polygon_x), min(polygon_y))
-                )
-                # figure_regions.append(annotation['bbox'])
-                for x in range(min(polygon_x) - 2, max(polygon_x) + 2):
-                    for y in range(min(polygon_y) - 2, max(polygon_y) + 2):
-                        image[y, x] = [255, 255, 255]
-
-        #  Paste new elements
-        image = Image.fromarray(image)
-        for region in figure_regions:
-
-            # Region boundaries
-            region = [round(coord) for coord in region]
-            min_x, max_y, max_x, min_y = region
-            # Don't paste reaction schemes into tiny regions
-            if max_x - min_x > 200 and max_y - min_y > 200:
-                paste_im_type = random.choice(["structure", "scheme", "random"])
-            else:
-                paste_im_type = random.choice(["structure", "random"])
-            # Determine how many chemical structures should be placed in the region.
-            if paste_im_type == "structure":
-                images_vertical, images_horizontal = self.determine_images_per_region(
-                    region
-                )
-            else:
-                # We don't want a grid of reaction schemes or random images.
-                images_vertical, images_horizontal = (1, 1)
-
-                # image, modified_annotations = self.paste_images(image, region, images_vertical, images_horizontal)
-
-            image, pasted_structure_info = self.paste_images(
-                image,
-                region,
-                images_vertical,
-                images_horizontal,
-                paste_im_type=paste_im_type,
-            )
-            modified_annotations += pasted_structure_info
-        modified_annotations = self.make_img_metadata_dict_from_PLN_annotations(
-            page_annotation["file_name"],
-            modified_annotations,
-            self.PLN_annotations["categories"],
-        )
-        return image, modified_annotations
-
-    def make_img_metadata_dict_from_PLN_annotations(
-        self,
-        image_name: str,
-        PLN_annotation_subdicts: List[Dict],
-        categories: List[Dict],
-    ) -> Dict:
-        """
-        This function takes the name of an image, the directory, the coordinates of
-        annotated polygon region and the list
-        of category dicts as given in the PLN annotations and returns the VIA 
-        _img_metadata_subdict for this image."""
-        metadata_dict = {}
-        metadata_dict["regions"] = []
-        # image_name = os.path.split(image_path)[-1]
-        metadata_dict["filename"] = image_name
-        # metadata_dict['size'] = int(os.stat(image_path).st_size)
-        # metadata_dict['shape'] = image.shape[:2]
-        for annotation in PLN_annotation_subdicts:
-            polygon = annotation["segmentation"][0]
-            polygon = [
-                (polygon[n], polygon[n - 1]) for n in range(len(polygon)) if n % 2 != 0
-            ]
-            category_ID = annotation["category_id"] - 1
-            category = categories[category_ID]["name"]
-            # Add dict for region which contains annotated entity
-            metadata_dict["regions"].append(self.make_region_dict(category, polygon))
-        return metadata_dict
-
-    def parallelisation_adjustment(self, parallel_call_number):
+    '''def parallelisation_adjustment(self, parallel_call_number):
         """
         For the asynchronous function calls, we need to take care of:
-        - JVM being started in the instance
-        - Multiprocessing context being set
         - Iterators being at the right position (otherwise, we will paste the
         same structures/images into the same PLN pages again and again)
         - The seed of the random_depictor instance needs to be adjusted so that
@@ -1918,7 +1659,7 @@ class ChemPageSegmentationDatasetCreator:
             for _ in range(5):
                 next(self.smiles_iterator)
         # Seed adjustment for random_depictor instance
-        self.depictor.seed = parallel_call_number
+        self.depictor.seed = parallel_call_number'''
 
     def create_and_save_chemical_page(
         self, output_dir: str = "./ChemPLN_dataset/", parallel_call_number: int = False,
@@ -1926,7 +1667,7 @@ class ChemPageSegmentationDatasetCreator:
         """
         This function calls create_chemical_page and modifies the resulting annotation
         so that it can be used for the VIA output.
-        
+
         """
         try:
             # If this is run in parallel, we need to take care of some things
@@ -1946,14 +1687,10 @@ class ChemPageSegmentationDatasetCreator:
             metadata_dict["shape"] = (chemical_page.size[1], chemical_page.size[0])
             metadata_dict["regions"] = region_dicts["regions"]
         except Exception as e:
-            logging.info(
-                "PROBLEM: Page with chemical annotations was not created during to the following exception: {}".format(
-                    e
-                )
-            )
+            logging.info(f"The following exception occured: {e}")
         return metadata_dict
 
-    def create_and_save_chemical_pages(
+    '''def create_and_save_chemical_pages(
         self, number: int, output_dir: str = "./ChemPLN_dataset/",
     ) -> List[Dict]:
         """
@@ -1972,7 +1709,7 @@ class ChemPageSegmentationDatasetCreator:
         #    PLN_annotations.append(next())
         def get_result(annotation):
             """
-            Helper function that is called when create_and_save_chemical_pages returns 
+            Helper function that is called when create_and_save_chemical_pages returns
             a metadata dict which is then appended to the list of annotations.
 
             Args:
@@ -1980,7 +1717,8 @@ class ChemPageSegmentationDatasetCreator:
             """
             annotations.append(annotation)
 
-        # TODO: Make asynchronous calls work with with-statement. I tried it here but the results are not collected.
+        # TODO: Make asynchronous calls work with with-statement.
+        # I tried it here but the results are not collected.
         # Create dataset in parallel
         q_listener, q = logger_init()
         logging.info("Start dataset creation")
@@ -2003,33 +1741,4 @@ class ChemPageSegmentationDatasetCreator:
         p.join()
         logging.info("Creation of images completed.")
         q_listener.stop()
-        return annotations
-
-
-def worker_init(q):
-    # This function is mostly copy-pasted from StackOverflow
-    # Source: https://stackoverflow.com/questions/641420/how-should-i-log-while-using-multiprocessing-in-python
-    # all records from worker processes go to qh and then into q
-    qh = QueueHandler(q)
-    logger = logging.getLogger()
-    logger.setLevel(logging.INFO)
-    logger.addHandler(qh)
-
-
-def logger_init():
-    # Source: https://stackoverflow.com/questions/641420/how-should-i-log-while-using-multiprocessing-in-python
-    q = Queue()
-    # this is the handler for all log records
-    # handler = logging.StreamHandler()
-    handler = logging.FileHandler("dataset_creation_log.txt")
-    handler.setFormatter(
-        logging.Formatter("%(levelname)s: %(asctime)s - %(process)s - %(message)s")
-    )
-    # ql gets records from the queue and sends them to the handler
-    ql = QueueListener(q, handler)
-    ql.start()
-    logger = logging.getLogger()
-    logger.setLevel(logging.INFO)
-    # add the handler to the logger so records from this process are handled
-    logger.addHandler(handler)
-    return ql, q
+        return annotations'''

@@ -125,9 +125,9 @@ def bb_expansion_coordination(
     parameter_combinations = [
         # (200, 160, False),
         # (100, 80, False),
-        # (50, 40, False),
-        (25, 20, False),
-        (25, 20, 5),
+        (50, 40, False),
+        # (25, 20, False),
+        # (25, 20, 5),
     ]
     for parameter_combination in parameter_combinations:
         bounding_box = original_bounding_box.copy()
@@ -164,7 +164,7 @@ def bb_expansion_coordination(
                         bounding_box, node_index, step, image_shape=image_array.shape
                     )
                     # If there is something that is not white
-                    if image_array[x, y] < 240:
+                    if image_array[x, y] < 254:
                         nodes_to_be_changed.append(node_index)
                         nodes_to_be_changed.append(node_index - 1)
                         break

@@ -1,7 +1,9 @@
-from typing import Dict, List, Tuple
 import json
 import os
 import numpy as np
+
+from PIL import Image, ImageDraw
+from typing import Dict, List, Tuple
 
 
 def make_region_dict(
@@ -37,7 +39,6 @@ def make_region_dict(
 
 
 def make_img_metadata_dict(
-    self,
     image_name: str,
     chemical_structure_polygon: np.ndarray,
     label_bounding_box=False,
@@ -63,14 +64,14 @@ def make_img_metadata_dict(
     #                                                  image_name)).st_size)
     metadata_dict["regions"] = []
     # Add dict for first region which contains chemical structure
-    struc_region_dict = self.make_region_dict(
+    struc_region_dict = make_region_dict(
         "chemical_structure", chemical_structure_polygon
     )
     metadata_dict["regions"].append(struc_region_dict)
     # If there is an ID label: Add dict for the label region
     if label_bounding_box:
         label_bounding_box = [(node[1], node[0]) for node in label_bounding_box]
-        ID_region_dict = self.make_region_dict("chemical_ID", label_bounding_box)
+        ID_region_dict = make_region_dict("chemical_ID", label_bounding_box)
         metadata_dict["regions"].append(ID_region_dict)
     return metadata_dict
 
@@ -128,7 +129,7 @@ def make_img_metadata_dict_from_PLN_annotations(
     return metadata_dict
 
 
-def load_PLN_annotations(PLN_dir: str, subset: str = "train") -> Dict:
+def load_PLN_annotations(PLN_dir: str, subset: str = "val") -> Dict:
     """
     This function loads the PubLayNet annotation dictionary and returns them in a
     clear format.The returned dictionary only contain entries where the images
@@ -161,9 +162,6 @@ def load_PLN_annotations(PLN_dir: str, subset: str = "train") -> Dict:
 
 
 def modify_annotations_PLN(
-    self,
-    # annotation_dir: str,
-    # image_name: str,
     regions_dicts: List[Dict],
     old_image_shape: Tuple[int],
     new_image_shape: Tuple[int],
@@ -201,9 +199,9 @@ def modify_annotations_PLN(
             # Load coordinates and alter them according to the resizing
             x_coords = region["shape_attributes"]["all_points_x"]
             y_coords = region["shape_attributes"]["all_points_y"]
-            x_coords, y_coords = self.fix_polygon_coordinates(x_coords,
-                                                                y_coords,
-                                                                old_image_shape)
+            x_coords, y_coords = fix_polygon_coordinates(x_coords,
+                                                         y_coords,
+                                                         old_image_shape)
             x_ratio = new_image_shape[0] / old_image_shape[0]
             y_ratio = new_image_shape[1] / old_image_shape[1]
             x_coords = [x_ratio * x_coord + paste_anchor[0] for x_coord in x_coords]
@@ -216,3 +214,65 @@ def modify_annotations_PLN(
                 modified_annotation["segmentation"][0].append(y_coords[n])
             modified_annotations.append(modified_annotation)
     return modified_annotations
+
+
+def fix_polygon_coordinates(
+    x_coords: List[int], y_coords: List[int], shape: Tuple[int]
+) -> Tuple[List[int], List[int]]:
+    """
+    If the coordinates are placed outside of the image, this function takes the
+    lists of coordinates and the image shape and adapts coordinates that are placed
+    outside of the image to be placed at its borders.
+
+    Args:
+        x_coords (List[int]): x coordinates
+        y_coords (List[int]): y coordinates
+        shape (Tuple[int]): image shape
+
+    Returns:
+        Tuple[List[int], List[int]]: x coordinates, y coordinates
+    """
+    for n in range(len(x_coords)):
+        if x_coords[n] < 0:
+            x_coords[n] = 0
+        if y_coords[n] < 0:
+            y_coords[n] = 0
+        if x_coords[n] > shape[0]:
+            x_coords[n] = shape[0] - 1
+        if y_coords[n] > shape[1]:
+            y_coords[n] = shape[1] - 1
+    return x_coords, y_coords
+
+
+def illustrate_annotations(image: Image, annotations: List[Dict]):
+    """
+    This function takes a PIL.Image object and an annotation dict and returns the
+    Image where the annotated regions are depicted as coloured boxes.
+
+    Args:
+        image (Image)
+        annotation (List[Dict]): List of region dictionaries
+
+    Returns:
+        PIL.Image: image with illustrated annotations
+    """
+    colour_dict = {
+        'chemical_structure': (0, 255, 0, 50),
+        'chemical_ID': (255, 0, 0, 50),
+        'arrow': (0, 0, 255, 50),
+        'R_group_label': (255, 255, 0, 50),
+        'reaction_condition_label': (0, 255, 255, 50),
+        'table': (255, 0, 255, 50),
+        'text': (0, 100, 0, 50),
+        'title': (100, 0, 0, 50)
+    }
+
+    for region in annotations:
+        x_coords = region['shape_attributes']['all_points_x']
+        y_coords = region['shape_attributes']['all_points_y']
+        polygon = [(x_coords[n], y_coords[n]) for n in range(len(x_coords)) if len]
+        draw = ImageDraw.Draw(image, 'RGBA')
+        colour = colour_dict[region['region_attributes']['type']]
+        draw.polygon(polygon, fill=colour)
+
+    return image

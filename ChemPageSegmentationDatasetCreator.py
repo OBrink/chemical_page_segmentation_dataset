@@ -10,14 +10,15 @@ import random
 from copy import deepcopy
 from itertools import cycle
 import logging
-# from multiprocessing import Pool, set_start_method, Queue
 from imantics import Polygons
 from skimage import morphology
 from polygon_bounding_box_determination import get_polygon_coordinates
 import RanDepict
 
-from annotation_utils import load_PLN_annotations
-# from jpype import startJVM, getDefaultJVMPath, isJVMStarted
+from annotation_utils import (load_PLN_annotations,
+                              make_region_dict,
+                              make_img_metadata_dict_from_PLN_annotations,
+                              modify_annotations_PLN)
 
 
 class ChemPageSegmentationDatasetCreator:
@@ -30,7 +31,6 @@ class ChemPageSegmentationDatasetCreator:
         self, smiles_list, load_PLN=True, PLN_annotation_number: int = False
     ):
         self.depictor = RanDepict.RandomDepictor()
-        self.depictor.ID_label_text
         self.smiles_iterator = cycle(smiles_list)
         # Random images to be pasted (eg. COCO images) for diversification
         self.random_image_dir = os.path.normpath("./random_images/")
@@ -41,16 +41,10 @@ class ChemPageSegmentationDatasetCreator:
             ]
         )
         # PubLayNet images
-        self.PLN_dir = os.path.normpath("./publaynet/")
-        self.PLN_images = cycle(
-            [
-                os.path.join(self.PLN_dir, "train", im)
-                for im in os.listdir(os.path.join(self.PLN_dir, "train"))
-            ]
-        )
+        self.PLN_dir = os.path.normpath("./publaynet/publaynet/")
         # Load PLN annotations and add custom categories; may take 1-2 min
-        if load_PLN_annotations:
-            self.PLN_annotations = load_PLN_annotations()
+        if load_PLN:
+            self.PLN_annotations = load_PLN_annotations(PLN_dir=self.PLN_dir)
             categories = self.PLN_annotations["categories"]
             categories.append(
                 {"supercategory": "", "id": 6, "name": "chemical_structure"}
@@ -87,6 +81,32 @@ class ChemPageSegmentationDatasetCreator:
         else:
             self.PLN_annotations = None
             self.annotation_iterator = None
+
+    def create_training_batch(self, batch_size: int) -> Tuple[List, List]:
+        """
+        Given a batch size, this function generates batch_size training images
+        with the corresponding annotations.
+
+        Args:
+            batch_size (int): number of images and annotations
+
+        Returns:
+            Tuple[List, List]: List of images, list of annotation dicts
+        """
+        content_generation_functions = [
+            self.create_chemical_page,
+            self.create_reaction_scheme,
+            self.create_grid_of_chemical_structures,
+            self.get_random_COCO_image
+        ]
+        images = []
+        annotations = []
+        for _ in range(batch_size):
+            content_function = random.choice(content_generation_functions)
+            image, annotation = content_function()
+            images.append(image)
+            annotations.append(annotation)
+        return images, annotations
 
     def create_chemical_page(self,):
         """
@@ -166,12 +186,169 @@ class ChemPageSegmentationDatasetCreator:
             )
             modified_annotations += pasted_structure_info
 
-        modified_annotations = self.make_img_metadata_dict_from_PLN_annotations(
+        modified_annotations = make_img_metadata_dict_from_PLN_annotations(
             page_annotation["file_name"],
             modified_annotations,
             self.PLN_annotations["categories"],
         )
-        return image, modified_annotations
+        return image, modified_annotations['regions']
+
+    def create_grid_of_chemical_structures(self):
+        """
+        This function returns a grid of chemical structures of random size with
+        the corresponding annotated region dictionaries.
+
+        Returns:
+            Image, Annotations
+        """
+        shape = (random.choice([200, 650]),
+                 random.choice([200, 650]))
+        region = (0, shape[1], shape[0], 0)
+        images_vertical, images_horizontal = self.determine_images_per_region(region)
+        image = Image.new("RGBA", shape, (255, 255, 255, 255))
+        image, pasted_structure_info = self.paste_chemical_contents(
+                image,
+                region,
+                images_vertical,
+                images_horizontal,
+                paste_im_type="structure",
+            )
+        annotations = make_img_metadata_dict_from_PLN_annotations(
+            "test",
+            pasted_structure_info,
+            self.PLN_annotations["categories"],
+        )
+        return image.convert("RGB"), annotations["regions"]
+
+    def get_random_COCO_image(self):
+        """
+        This function returns a random non-chemical image. In half of the cases,
+        it is returned as a binarised image.
+
+        ___
+        Returns:
+
+        PIL.Image (mode: "RGB")
+        Empty list (where all other functions would return a list of annotation dicts)
+        """
+        im = Image.open(next(self.random_images))
+        im = im.rotate(random.choice([0, 90, 180, 270]))
+        if random.choice([True, False]):
+            im = im.convert("L")
+            im = im.point(lambda x: 255 if x > 150 else 0,
+                          mode="1")
+        im = Image.fromarray(np.asarray(im))
+        return im, []
+
+    def generate_multiple_structures_with_annotation(
+            self,
+            number: int,
+    ) -> Tuple[List, List]:
+        """
+        Given a number of desired structures, this function returns a list of
+        PIL.Image objects that hold the chemical structure depictions and a list of
+        annotations that hold information about the annotated region
+
+        Args:
+            number (int): desired number of structure depictions
+
+        Returns:
+            Tuple[List, List]: structures, annotations
+        """
+        structure_images: List = []
+        annotated_regions: List = []
+        for _ in range(number):
+            smiles = next(self.smiles_iterator)
+            side_len = random.choice(range(200, 400))
+            structure_image, annotation = self.generate_structure_with_annotation(
+                smiles, shape=(side_len, side_len),
+                label=random.choice([True, False])
+            )
+            structure_images.append(structure_image)
+            annotated_regions.append(annotation)
+        return structure_images, annotated_regions
+
+    def generate_structure_with_annotation(
+        self,
+        smiles: str,
+        shape: Tuple[int] = (200, 200),
+        label: bool = False,
+        arrows: bool = False,
+    ):
+        """
+        Generate a chemical structure depiction and the metadata dict with
+        the polygon bounding box.
+
+        Args:
+            smiles (str): SMILES representation of chemical compound
+            label (bool, optional): Set to True if additional labels around
+                                    the structure are desired.
+                                    Defaults to False.
+            arrows (bool, optional): Set to True if curved arrows in the
+                                     structure are desired. Defaults to False.
+
+        Returns:
+            output_image (PIL.Image)
+            metadata_dict (Dict): dictionary containing the coordinates that
+                                  are necessary to define the polygon bounding
+                                  box around the chemical structure depiction.
+        """
+        # Depict chemical structure
+        image = self.depictor.random_depiction(smiles, shape)
+        image = Image.fromarray(image)
+        # Add some padding
+        image = self.pad_image(image, factor=1.8)
+        # Get coordinates of polygon around chemical structure
+        polygon = get_polygon_coordinates(
+            image_array=np.asarray(image), debug=False
+        )
+        if type(polygon) == np.ndarray:
+            # Add a chemical ID label to the image
+            if label:
+                if random.choice([True, False]):
+                    image, label_bounding_box = self.add_chemical_ID(image,
+                                                                     polygon,
+                                                                     False)
+                    label_type = "chemical_ID"
+                else:
+                    image, R_group_regions = self.insert_labels(
+                        image.convert("RGB"), 1, "r_group")
+                    if len(R_group_regions) > 0:
+                        xcoords = R_group_regions[0]["shape_attributes"]["all_points_x"]
+                        ycoords = R_group_regions[0]["shape_attributes"]["all_points_y"]
+                        label_bounding_box = [[xcoords[n], ycoords[n]]
+                                              for n in range(len(xcoords))]
+                    else:
+                        label_bounding_box = False
+                    label_type = "R_group_label"
+            else:
+                label_bounding_box = None
+            # The image should not be bigger than necessary.
+            (image, polygon, label_bounding_box) = self.delete_whitespace(
+                image, polygon, label_bounding_box
+            )
+            # In 20 percent of cases: Make structure image coloured to get
+            # more diversity in the training set (colours should be
+            # irrelevant for predictions)
+            if random.choice(range(5)) == 0:
+                image = self.modify_colours(image, blacken=False)
+            elif random.choice(range(5)) in [1, 2]:
+                image = self.modify_colours(image, blacken=True)
+
+            # Add curved arrows in the structure
+            if arrows:
+                arrow_dir = os.path.abspath("./arrows/arrow_images")
+                image = self.add_arrows_to_structure(image, arrow_dir, polygon)
+
+            region_annotations = []
+            region_dict = make_region_dict("chemical_structure", polygon, smiles)
+            region_annotations.append(region_dict)
+            if label_bounding_box:
+                label_bounding_box = [(node[1], node[0]) for node in label_bounding_box]
+                region_dict = make_region_dict(label_type, label_bounding_box)
+                region_annotations.append(region_dict)
+
+            return image, region_annotations
 
     def pad_image(self, pil_image: Image, factor: float):
         """
@@ -263,7 +440,7 @@ class ChemPageSegmentationDatasetCreator:
             debug (bool, optional): Activates visualisation. Defaults to False.
 
         Returns:
-            Tuple: _description_
+            Tuple: image, label_bounding_box
         """
         im = image.convert("RGB")
         y_coordinates = [node[0] for node in chemical_structure_polygon]
@@ -475,72 +652,6 @@ class ChemPageSegmentationDatasetCreator:
         polygon, label_bbox = self.adapt_coordinates(polygon, label_bbox, crop_indices)
         return Image.fromarray(image), polygon, label_bbox
 
-    def generate_structure_and_annotation(
-        self,
-        smiles: str,
-        shape: Tuple[int] = (200, 200),
-        label: bool = False,
-        arrows: bool = False,
-    ):
-        """
-        Generate a chemical structure depiction and the metadata dict with
-        the polygon bounding box.
-
-        Args:
-            smiles (str): SMILES representation of chemical compound
-            label (bool, optional): Set to True if additional labels around
-                                    the structure are desired.
-                                    Defaults to False.
-            arrows (bool, optional): Set to True if curved arrows in the
-                                     structure are desired. Defaults to False.
-
-        Returns:
-            output_image (PIL.Image)
-            metadata_dict (Dict): dictionary containing the coordinates that
-                                  are necessary to define the polygon bounding
-                                  box around the chemical structure depiction.
-        """
-        # Depict chemical structure
-        image = self.depictor.random_depiction(smiles, shape)
-        image = Image.fromarray(image)
-        # Add some padding
-        image = self.pad_image(image, factor=1.8)
-        # Get coordinates of polygon around chemical structure
-        polygon = get_polygon_coordinates(
-            image_array=np.asarray(image), debug=False
-        )
-        if type(polygon) == np.ndarray:
-            # Add a chemical ID label to the image
-            if label:
-                image, label_bounding_box = self.add_chemical_ID(image, polygon, False)
-            else:
-                label_bounding_box = None
-            # The image should not be bigger than necessary.
-            (image, polygon, label_bounding_box) = self.delete_whitespace(
-                image, polygon, label_bounding_box
-            )
-            # In 20 percent of cases: Make structure image coloured to get
-            # more diversity in the training set (colours should be
-            # irrelevant for predictions)
-            if random.choice(range(5)) == 0:
-                image = self.modify_colours(image, blacken=False)
-            elif random.choice(range(5)) in [1, 2]:
-                image = self.modify_colours(image, blacken=True)
-
-            # Add curved arrows in the structure
-            if arrows:
-                arrow_dir = os.path.abspath("./arrows/arrow_images")
-                image = self.add_arrows_to_structure(image, arrow_dir, polygon)
-
-            region_annotations = []
-            region_dict = self.make_region_dict("chemical_structure", polygon, smiles)
-            region_annotations.append(region_dict)
-            if label_bounding_box:
-                label_bounding_box = [(node[1], node[0]) for node in label_bounding_box]
-                region_dict = self.make_region_dict("chemical_ID", label_bounding_box)
-                region_annotations.append(region_dict)
-            return image, region_annotations
-
     def is_valid_position(
         self,
         structure_paste_position: Tuple[int, int],
@@ -609,10 +720,11 @@ class ChemPageSegmentationDatasetCreator:
                 )
         return image
 
-    def modify_annotations(self,
-                           original_regions: List[List[Dict]],
-                           paste_anchors: List[Tuple[int, int]]
-                           ) -> List[Dict]:
+    def modify_annotations(
+        self,
+        original_regions: List[List[Dict]],
+        paste_anchors: List[Tuple[int, int]]
+    ) -> List[Dict]:
         """
         This function takes the original annotated regions (VIA dict format) and the
         paste position (x, y) [upper left corner]. The coordinates of the regions are
@@ -671,7 +783,7 @@ class ChemPageSegmentationDatasetCreator:
                 annotation = Polygons.from_mask(image).points
             # swap x and y (numpy and PIL don't agree here. This way, it is consistent)
             annotation = [(x[1], x[0]) for x in annotation[0]]
-            region_dicts.append([self.make_region_dict("arrow", annotation)])
+            region_dicts.append([make_region_dict("arrow", annotation)])
         return region_dicts
 
     def is_diagonal_arrow(self, arrow_bbox: List[Tuple[int, int]]) -> bool:
@@ -711,7 +823,7 @@ class ChemPageSegmentationDatasetCreator:
             image (Image): PIL.Image
             max_labels (int): Maximal amount of labels
             label_type (str): 'r_group' or 'reaction_condition
-            arrow_bboxes (bool, optional): [description]. Defaults to False.
+            arrow_bboxes (bool, optional): Defaults to False.
 
         Returns:
             Image: Modified Image
@@ -820,12 +932,12 @@ class ChemPageSegmentationDatasetCreator:
                             ]
                             if label_type == "r_group":
                                 region_dicts.append(
-                                    [self.make_region_dict("R_group_label", text_bbox)]
+                                    [make_region_dict("R_group_label", text_bbox)]
                                 )
                             if label_type == "reaction_condition":
                                 region_dicts.append(
                                     [
-                                        self.make_region_dict(
+                                        make_region_dict(
                                             "reaction_condition_label", text_bbox
                                         )
                                     ]
@@ -876,613 +988,442 @@ class ChemPageSegmentationDatasetCreator:
 
     def create_reaction_scheme(self,) -> Image:
         """
-        This function creates an artificial (nonsense) reaction scheme and returns it.
-        Additionally, it creates a json file containing the coordinates elements.
-        The json output file is VIA-compatible and is saved in the output directory.
+        This function creates an artificial reaction scheme (PIL.Image) and an
+        annotation dictionary that contains information about the regions of all
+        included elements
+        
 
         Returns:
             Image: artificial reaction scheme
+            Dict: annotated region information
         """
+        scheme_generation_functions = [
+            self.create_reaction_scheme_two_structures_horizontal,
+            self.create_reaction_scheme_three_structures_horizontal,
+            self.create_reaction_scheme_three_structures_vertical,
+            self.create_reaction_scheme_five_structures,
+            self.create_reaction_scheme_seven_structures,
+        ]
+        scheme_generation_function = random.choice(scheme_generation_functions)
 
-        # TODO: Split this giant mess into multiple functions
-        # Load chemical structure depictions and annotations
-        structure_images = []
-        annotated_regions = []
-        for n in range(random.choice([2, 3, 5, 7, 9])):
-            smiles = next(self.smiles_iterator)
-            side_len = random.choice(range(200, 400))
-            structure_image, annotation = self.generate_structure_and_annotation(
-                smiles, shape=(side_len, side_len), label=random.choice([True, False])
-            )
-            structure_images.append(structure_image)
-            annotated_regions.append(annotation)
-        # Load random arrow
+        reaction_scheme, annotations = scheme_generation_function()
+        return reaction_scheme, annotations
+
+    def get_random_arrow_image(self, x: int, y: int) -> Image:
+        """
+        This function loads a random arrow image from the arrow image directory
+        and returns it as an RGBA image (PIL.Image object).
+
+        Args:
+            x (int): desired arrow image width
+            y (int): desired arrow image height
+
+        Returns:
+            Image: arrow image
+        """
         arrow_dir = os.path.abspath("./arrows/horizontal_arrows/")
         arrow_image_name = random.choice(os.listdir(arrow_dir))
         arrow_im = Image.open(os.path.join(arrow_dir, arrow_image_name))
         arrow_image = Image.new("RGBA", arrow_im.size, (255, 255, 255, 255))
         arrow_image = Image.alpha_composite(arrow_image, arrow_im)
-
-        # Overview of image sizes
         resize_method = random.choice([3, 4, 5])
-        structure_image_sizes = [image.size for image in structure_images]
-        structure_image_x = [size[0] for size in structure_image_sizes]
-        structure_image_y = [size[1] for size in structure_image_sizes]
-        arrow_image = arrow_image.resize(
-            (structure_image_x[0], int(structure_image_y[1] / 8)),
-            resample=resize_method,
-        )
+        arrow_image = arrow_image.resize((x, y), resample=resize_method,)
+        return arrow_image
 
-        # TODO: Improve the mess below
-        # I hope I never have to touch this again but I think this is the easiest way
-        # to do this.
-        # I cannot get around defining the coordinates for putting everything together
-        # differently.
-        # Depending on the number of structures, the positions for pasting structures
-        # and arrows are defined so that we end up with artificial reaction schemes
+    def get_image_sizes(
+        self,
+        images: List
+    ) -> Tuple[List[int], List[int]]:
+        """
+        Given a list of PIL.Image objects, this function returns a list of image
+        widths and a list of image heights.
 
-        # Two structures, one arrow inbetween
-        if len(structure_images) == 2:
-            size = (
-                sum(structure_image_x) + arrow_image.size[0],
-                max(structure_image_y),
-            )
-            image = Image.new("RGBA", size, (255, 255, 255, 255))
-            paste_positions = [
-                (
-                    0,
-                    int((max(structure_image_y) - structure_images[0].size[1]) / 2),
-                ),  # left structure
-                (
-                    structure_image_x[0] + arrow_image.size[0],
-                    int((max(structure_image_y) - structure_images[1].size[1]) / 2),
-                ),
-            ]  # right structure
-            arrow_paste_positions = [
-                (structure_image_x[0], int(structure_image_y[0] / 2))
-            ]  # reaction arrow]
-            paste_positions += arrow_paste_positions
-            paste_images = [structure_images[0], structure_images[1]]
-            arrow_image_list = [arrow_image]
-            paste_images += arrow_image_list
-            image = self.paste_chemical_contents(image,
-                                                 paste_positions,
-                                                 paste_images,
-                                                 False)
-            annotated_regions += self.determine_arrow_annotations([arrow_image])
-            annotated_regions = self.modify_annotations(
-                annotated_regions, paste_positions
-            )
+        Args:
+            images (List): List of PIL.Image objects
 
-        # Three structures, two arrows inbetween
-        if len(structure_images) == 3:
-            if random.choice([True, False]):
-                # Horizontal reaction scheme with three stuctures
-                size = (
-                    sum(structure_image_x) + arrow_image.size[0] * 2,
-                    max(structure_image_y),
-                )
-                image = Image.new("RGBA", size, (255, 255, 255, 255))
-                paste_positions = [
-                    (
-                        0,
-                        int((max(structure_image_y) - structure_images[0].size[1]) / 2),
-                    ),  # left structure
-                    (
-                        structure_image_x[0] + arrow_image.size[0],
-                        int((max(structure_image_y) - structure_images[1].size[1]) / 2),
-                    ),  # middle structure
-                    (
-                        sum(structure_image_x[:2]) + arrow_image.size[0] * 2,
-                        int((max(structure_image_y) - structure_images[2].size[1]) / 2),
-                    ),
-                ]  # right structure
-                arrow_paste_positions = [
-                    (
-                        structure_image_x[0],
-                        int(max(structure_image_y) / 2),
-                    ),  # left reaction arrow
-                    (
-                        sum(structure_image_x[:2]) + arrow_image.size[0],
-                        int(max(structure_image_y) / 2),
-                    ),
-                ]  # right reaction arrow
-                paste_positions += arrow_paste_positions
-                paste_images = [
-                    structure_images[0],
-                    structure_images[1],
-                    structure_images[2],
-                ]
-                arrow_image_list = [
-                    arrow_image.rotate(
-                        180, expand=True, fillcolor=(255, 255, 255, 255)
-                    ),
-                    arrow_image,
-                ]
-                paste_images += arrow_image_list
-                image = self.paste_chemical_contents(image,
-                                                     paste_positions,
-                                                     paste_images,
-                                                     False)
-                annotated_regions += self.determine_arrow_annotations(
-                    [
-                        arrow_image.rotate(
-                            180, expand=True, fillcolor=(255, 255, 255, 255)
-                        ),
-                        arrow_image,
-                    ]
-                )
-                annotated_regions = self.modify_annotations(
-                    annotated_regions, paste_positions
-                )
-            else:
-                # Vertical reaction scheme with three stuctures
-                size = (
-                    max(structure_image_x),
-                    sum(structure_image_y) + arrow_image.size[0] * 2,
-                )
-                image = Image.new("RGBA", size, (255, 255, 255, 255))
-                paste_positions = [
-                    (
-                        int((max(structure_image_x) - structure_images[0].size[0]) / 2),
-                        0,
-                    ),  # upper structure
-                    (
-                        int((max(structure_image_x) - structure_images[1].size[0]) / 2),
-                        sum(structure_image_y[:1]) + arrow_image.size[0],
-                    ),  # middle structure
-                    (
-                        int((max(structure_image_x) - structure_images[2].size[0]) / 2),
-                        sum(structure_image_y[:2]) + arrow_image.size[0] * 2,
-                    ),
-                ]  # lower structure
-                arrow_paste_positions = [
-                    (
-                        int(max(structure_image_x) / 2),
-                        structure_image_y[0],
-                    ),  # upper reaction arrow
-                    (
-                        int(max(structure_image_x) / 2),
-                        sum(structure_image_y[:2]) + arrow_image.size[0],
-                    ),
-                ]  # lower arrow
-                paste_positions += arrow_paste_positions
-                paste_images = [
-                    structure_images[0],
-                    structure_images[1],
-                    structure_images[2],
-                ]
-                arrow_image_list = [
-                    arrow_image.rotate(90,
-                                       expand=True,
-                                       fillcolor=(255, 255, 255, 255)),
-                    arrow_image.rotate(
-                        270, expand=True, fillcolor=(255, 255, 255, 255)
-                    ),
-                ]
-                paste_images += arrow_image_list
-                image = self.paste_chemical_contents(image,
-                                                     paste_positions,
-                                                     paste_images,
-                                                     False)
-                annotated_regions += self.determine_arrow_annotations(
-                    [
-                        arrow_image.rotate(
-                            90, expand=True, fillcolor=(255, 255, 255, 255)
-                        ),
-                        arrow_image.rotate(
-                            270, expand=True, fillcolor=(255, 255, 255, 255)
-                        ),
-                    ]
-                )
-                annotated_regions = self.modify_annotations(
-                    annotated_regions, paste_positions
-                )
+        Returns:
+            Tuple[List[int], List[int]]: Image widths, image heights
+        """
+        image_sizes = [image.size for image in images]
+        image_sizes_x = [size[0] for size in image_sizes]
+        image_sizes_y = [size[1] for size in image_sizes]
+        return image_sizes_x, image_sizes_y
 
-        if len(structure_images) in [5, 9]:
-            size = (
-                sum([structure_image_x[n] for n in [0, 1, 2]])
-                + arrow_image.size[0] * 2,
-                sum([structure_image_y[n] for n in [1, 3, 4]])
-                + arrow_image.size[0] * 2,
-            )
-            image = Image.new("RGBA", size, (255, 255, 255, 255))
-            paste_positions = [
-                (
-                    0,
-                    int(
-                        structure_image_y[3]
-                        + arrow_image.size[0]
-                        + 0.5 * structure_image_y[1]
-                        - 0.5 * structure_image_y[0]
-                    ),
-                ),  # left structure
-                (
-                    sum(structure_image_x[:1]) + arrow_image.size[0] * 1,
-                    int(
-                        structure_image_y[3]
-                        + arrow_image.size[0]
-                        + 0.5 * structure_image_y[1]
-                        - 0.5 * structure_image_y[1]
-                    ),
-                ),  # middle_structure
-                (
-                    sum(structure_image_x[:2]) + arrow_image.size[0] * 2,
-                    int(
-                        structure_image_y[3]
-                        + arrow_image.size[0]
-                        + 0.5 * structure_image_y[1]
-                        - 0.5 * structure_image_y[2]
-                    ),
-                ),  # right structure
-                (
-                    int(
-                        structure_image_x[0]
-                        + arrow_image.size[0]
-                        + 0.5 * structure_image_x[1]
-                        - 0.5 * structure_image_x[3]
-                    ),
-                    0,
-                ),  # upper structure
-                (
-                    int(
-                        structure_image_x[0]
-                        + arrow_image.size[0]
-                        + 0.5 * structure_image_x[1]
-                        - 0.5 * structure_image_x[4]
-                    ),
-                    sum([structure_image_y[n] for n in [1, 3]])
-                    + arrow_image.size[0] * 2,
-                ),
-            ]  # lower structure
-            arrow_paste_positions = [
-                (
-                    sum(structure_image_x[:1]),
-                    int(
-                        structure_image_y[3]
-                        + arrow_image.size[0]
-                        + 0.5 * structure_image_y[1]
-                    ),
-                ),  # left arrow
-                (
-                    sum(structure_image_x[:2]) + arrow_image.size[0],
-                    int(
-                        structure_image_y[3]
-                        + arrow_image.size[0]
-                        + 0.5 * structure_image_y[1]
-                    ),
-                ),  # right arrow
-                (
-                    int(
-                        structure_image_x[0]
-                        + arrow_image.size[0]
-                        + 0.5 * structure_image_x[1]
-                    ),
-                    structure_image_y[3],
-                ),  # upper arrow
-                (
-                    int(
-                        structure_image_x[0]
-                        + arrow_image.size[0]
-                        + 0.5 * structure_image_x[1]
-                    ),
-                    sum([structure_image_y[n] for n in [1, 3]]) + arrow_image.size[0],
-                ),
-            ]  # lower arrow
-            paste_images = structure_images[:4] + [structure_images[4]]
-            arrow_image_list = [
-                arrow_image.rotate(180, expand=True, fillcolor=(255, 255, 255, 255)),
-                arrow_image,
-                arrow_image.rotate(90, expand=True, fillcolor=(255, 255, 255, 255)),
-                arrow_image.rotate(270, expand=True, fillcolor=(255, 255, 255, 255)),
-            ]
-            if len(structure_images) == 5:
-                annotated_regions += self.determine_arrow_annotations(arrow_image_list)
-                paste_positions += arrow_paste_positions
-                paste_images += arrow_image_list
-                annotated_regions = self.modify_annotations(
-                    annotated_regions, paste_positions
-                )
-            if len(structure_images) == 9:
-                # TODO: Shorten this. Trying to define the positions in a shorter way
-                # gives me a headache right now but it works the way it is.
-                # I am aware that this is a mess.
-                # Add diagonal and structures
-                middle_structure = (
-                    sum(structure_image_x[:1]) + arrow_image.size[0] * 1,
-                    int(
-                        structure_image_y[3]
-                        + arrow_image.size[0]
-                        + 0.5 * structure_image_y[1]
-                        - 0.5 * structure_image_y[1]
-                    ),
-                )
-                # upper left
-                arrow_image_1 = arrow_image.rotate(
-                    135, expand=True, fillcolor=(255, 255, 255, 255)
-                )
-                arrow_paste_position_1 = (
-                    middle_structure[0] - arrow_image_1.size[0],
-                    middle_structure[1] - arrow_image_1.size[1],
-                )
-                structure_paste_position_1 = (
-                    arrow_paste_position_1[0] - structure_image_x[5],
-                    arrow_paste_position_1[1] - int(0.75 * structure_image_y[5]),
-                )
-                # upper right
-                arrow_image_2 = arrow_image_1.rotate(
-                    270, expand=True, fillcolor=(255, 255, 255, 255)
-                )
-                arrow_paste_position_2 = (
-                    middle_structure[0] + structure_image_x[1],
-                    middle_structure[1] - arrow_image_2.size[1],
-                )
-                structure_paste_position_2 = (
-                    arrow_paste_position_2[0] + arrow_image_2.size[0],
-                    arrow_paste_position_2[1] - int(0.75 * structure_image_y[6]),
-                )
-                # lower right
-                arrow_image_3 = arrow_image_2.rotate(
-                    270, expand=True, fillcolor=(255, 255, 255, 255)
-                )
-                arrow_paste_position_3 = (
-                    middle_structure[0] + structure_image_x[1],
-                    middle_structure[1] + structure_image_y[1],
-                )
-                structure_paste_position_3 = (
-                    arrow_paste_position_3[0] + arrow_image_3.size[0],
-                    arrow_paste_position_3[1]
-                    + arrow_image_3.size[1]
-                    - int(0.25 * structure_image_y[7]),
-                )
-                # lower left
-                arrow_image_4 = arrow_image_3.rotate(
-                    270, expand=True, fillcolor=(255, 255, 255, 255)
-                )
-                arrow_paste_position_4 = (
-                    middle_structure[0] - arrow_image_4.size[0],
-                    middle_structure[1] + structure_image_y[1],
-                )
-                structure_paste_position_4 = (
-                    arrow_paste_position_4[0] - structure_image_x[8],
-                    arrow_paste_position_4[1]
-                    + arrow_image_4.size[1]
-                    - int(0.25 * structure_image_y[8]),
-                )
+    def create_reaction_scheme_two_structures_horizontal(
+        self,
+    ) -> Tuple:
+        """
+        This function generates a horizontal reaction scheme with two chemical
+        structures and a reaction arrow between them.
 
-                # Only add structures and arrows that point at them if the structures
-                # fit in the image
-                annotated_regions_copy = deepcopy(annotated_regions)
-                for n in range(1, 5):
-                    if self.is_valid_position(
-                        eval("structure_paste_position_" + str(n)),
-                        image.size,
-                        structure_images[4 + n].size,
-                    ):
-                        arrow_paste_positions.append(
-                            eval("arrow_paste_position_" + str(n))
-                        )
-                        arrow_image_list.append(eval("arrow_image_" + str(n)))
-                        paste_images.append(structure_images[4 + n])
-                        paste_positions.append(
-                            eval("structure_paste_position_" + str(n))
-                        )
-                    else:
-                        annotated_regions.remove(annotated_regions_copy[4 + n])
-
-                annotated_regions += self.determine_arrow_annotations(arrow_image_list)
-                paste_positions += arrow_paste_positions
-                paste_images += arrow_image_list
-
-                annotated_regions = self.modify_annotations(
-                    annotated_regions, paste_positions
-                )
-            image = self.paste_chemical_contents(image,
-                                                 paste_positions,
-                                                 paste_images,
-                                                 False)
-
-        if len(structure_images) == 7:
-            size = (
-                sum([structure_image_x[n] for n in [0, 1, 2]])
-                + arrow_image.size[0] * 2,
-                sum([structure_image_y[n] for n in [1, 3, 4]])
-                + arrow_image.size[0] * 2,
-            )
-            image = Image.new("RGBA", size, (255, 255, 255, 255))
-            # Horizontal reaction flow
-            paste_positions = [
-                (
-                    0,
-                    int(
-                        structure_image_y[3]
-                        + arrow_image.size[0]
-                        + 0.5 * structure_image_y[1]
-                        - 0.5 * structure_image_y[0]
-                    ),
-                ),  # left structure
-                (
-                    sum(structure_image_x[:1]) + arrow_image.size[0] * 1,
-                    int(
-                        structure_image_y[3]
-                        + arrow_image.size[0]
-                        + 0.5 * structure_image_y[1]
-                        - 0.5 * structure_image_y[1]
-                    ),
-                ),  # middle_structure
-                (
-                    sum(structure_image_x[:2]) + arrow_image.size[0] * 2,
-                    int(
-                        structure_image_y[3]
-                        + arrow_image.size[0]
-                        + 0.5 * structure_image_y[1]
-                        - 0.5 * structure_image_y[2]
-                    ),
-                ),
-            ]  # right structure
-            arrow_paste_positions = [
-                (
-                    sum(structure_image_x[:1]),
-                    int(
-                        structure_image_y[3]
-                        + arrow_image.size[0]
-                        + 0.5 * structure_image_y[1]
-                    ),
-                ),  # left arrow
-                (
-                    sum(structure_image_x[:2]) + arrow_image.size[0],
-                    int(
-                        structure_image_y[3]
-                        + arrow_image.size[0]
-                        + 0.5 * structure_image_y[1]
-                    ),
-                ),
-            ]  # right arrow
-
-            paste_images = structure_images[:3]
-            arrow_image_list = [
-                arrow_image.rotate(180, expand=True, fillcolor=(255, 255, 255, 255)),
-                arrow_image,
-            ]
-
-            # TODO: Shorten this. Trying to define the positions in a shorter way gives
-            # me a headache right now but it works the way it is.
-            # I am aware that this is a mess.
-            # Add diagonal and structures
-            middle_structure = (
-                sum(structure_image_x[:1]) + arrow_image.size[0] * 1,
-                int(
-                    structure_image_y[3]
-                    + arrow_image.size[0]
-                    + 0.5 * structure_image_y[1]
-                    - 0.5 * structure_image_y[1]
-                ),
-            )
-            # upper left
-            arrow_image_1 = arrow_image.rotate(
-                135, expand=True, fillcolor=(255, 255, 255, 255)
-            )
-            arrow_paste_position_1 = (
-                middle_structure[0] - arrow_image_1.size[0],
-                middle_structure[1] - arrow_image_1.size[1],
-            )
-            structure_paste_position_1 = (
-                arrow_paste_position_1[0] - structure_image_x[3],
-                arrow_paste_position_1[1] - int(0.75 * structure_image_y[3]),
-            )
-            # upper right
-            arrow_image_2 = arrow_image_1.rotate(
-                270, expand=True, fillcolor=(255, 255, 255, 255)
-            )
-            arrow_paste_position_2 = (
-                middle_structure[0] + structure_image_x[1],
-                middle_structure[1] - arrow_image_2.size[1],
-            )
-            structure_paste_position_2 = (
-                arrow_paste_position_2[0] + arrow_image_2.size[0],
-                arrow_paste_position_2[1] - int(0.75 * structure_image_y[4]),
-            )
-            # lower right
-            arrow_image_3 = arrow_image_2.rotate(
-                270, expand=True, fillcolor=(255, 255, 255, 255)
-            )
-            arrow_paste_position_3 = (
-                middle_structure[0] + structure_image_x[1],
-                middle_structure[1] + structure_image_y[1],
-            )
-            structure_paste_position_3 = (
-                arrow_paste_position_3[0] + arrow_image_3.size[0],
-                arrow_paste_position_3[1]
-                + arrow_image_3.size[1]
-                - int(0.25 * structure_image_y[5]),
-            )
-            # lower left
-            arrow_image_4 = arrow_image_3.rotate(
-                270, expand=True, fillcolor=(255, 255, 255, 255)
-            )
-            arrow_paste_position_4 = (
-                middle_structure[0] - arrow_image_4.size[0],
-                middle_structure[1] + structure_image_y[1],
-            )
-            structure_paste_position_4 = (
-                arrow_paste_position_4[0] - structure_image_x[6],
-                arrow_paste_position_4[1]
-                + arrow_image_4.size[1]
-                - int(0.25 * structure_image_y[6]),
-            )
-
-            # Only add structures and arrows that point at them if the structures fit
-            # in the image
-            annotated_regions_copy = deepcopy(annotated_regions)
-            for n in range(1, 5):
-                if self.is_valid_position(
-                    eval("structure_paste_position_" + str(n)),
-                    image.size,
-                    structure_images[2 + n].size,
-                ):
-                    arrow_paste_positions.append(eval("arrow_paste_position_" + str(n)))
-                    arrow_image_list.append(eval("arrow_image_" + str(n)))
-                    paste_images.append(structure_images[2 + n])
-                    paste_positions.append(eval("structure_paste_position_" + str(n)))
-                else:
-                    annotated_regions.remove(annotated_regions_copy[2 + n])
-
-            annotated_regions += self.determine_arrow_annotations(arrow_image_list)
-            paste_positions += arrow_paste_positions
-            paste_images += arrow_image_list
-
-            annotated_regions = self.modify_annotations(
-                annotated_regions, paste_positions
-            )
-            image = self.paste_images(image, paste_positions, paste_images)
-
-        # Insert labels and update annotations
-        if random.choice([True, False]):
-            image, R_group_regions = self.insert_labels(
-                image, len(structure_images) - 1, "r_group"
-            )
-            annotated_regions += R_group_regions
+        Returns:
+            Tuple[Image, List]: Reaction scheme, annotation dicts
+        """
+        structures, annotations = self.generate_multiple_structures_with_annotation(2)
+        structure_image_x, structure_image_y = self.get_image_sizes(structures)
+        arrow_image = self.get_random_arrow_image(structure_image_x[0],
+                                                  int(structure_image_y[1] / 8))
+        size = (sum(structure_image_x) + arrow_image.size[0],
+                max(structure_image_y),)
+        image = Image.new("RGBA", size, (255, 255, 255, 255))
+        paste_positions = [
+            (0, int((max(structure_image_y) - structures[0].size[1]) / 2),),
+            (structure_image_x[0] + arrow_image.size[0],
+             int((max(structure_image_y) - structures[1].size[1]) / 2),),
+        ]
+        arrow_paste_positions = [
+            (structure_image_x[0], int(structure_image_y[0] / 2))
+        ]
+        paste_positions += arrow_paste_positions
+        paste_images = structures
+        arrow_image_list = [arrow_image]
+        paste_images += arrow_image_list
+        image = self.paste_images(image, paste_positions, paste_images)
+        annotations += self.determine_arrow_annotations(arrow_image_list)
+        annotations = self.modify_annotations(annotations, paste_positions)
         if random.choice([True, False]):
             arrow_bboxes = self.get_bboxes(arrow_image_list, arrow_paste_positions)
             image, reaction_condition_regions = self.insert_labels(
-                image, len(structure_images) - 1, "reaction_condition", arrow_bboxes
+                image, len(structures) - 1, "reaction_condition", arrow_bboxes
             )
-            annotated_regions += reaction_condition_regions
-        return image.convert("RGB"), annotated_regions
+            annotations += reaction_condition_regions
+        return image.convert("RGB"), annotations
 
-    def fix_polygon_coordinates(
-        self, x_coords: List[int], y_coords: List[int], shape: Tuple[int]
-    ) -> Tuple[List[int], List[int]]:
+    def create_reaction_scheme_three_structures_horizontal(
+        self,
+    ) -> Tuple:
         """
-        If the coordinates are placed outside of the image, this function takes the
-        lists of coordinates and the image shape and adapts coordinates that are placed
-        outside of the image to be placed at its borders.
-
-        Args:
-            x_coords (List[int]): x coordinates
-            y_coords (List[int]): y coordinates
-            shape (Tuple[int]): image shape
+        This function generates a horizontal reaction scheme with three chemical
+        structures and two reaction arrow between them.
 
         Returns:
-            Tuple[List[int], List[int]]: x coordinates, y coordinates
+            Tuple[Image, List]: Reaction scheme, annotation dicts
         """
-        for n in range(len(x_coords)):
-            if x_coords[n] < 0:
-                x_coords[n] = 0
-            if y_coords[n] < 0:
-                y_coords[n] = 0
-            if x_coords[n] > shape[0]:
-                x_coords[n] = shape[0] - 1
-            if y_coords[n] > shape[1]:
-                y_coords[n] = shape[1] - 1
-        return x_coords, y_coords
+        structures, annotations = self.generate_multiple_structures_with_annotation(3)
+        structure_image_x, structure_image_y = self.get_image_sizes(structures)
+        arrow_image = self.get_random_arrow_image(structure_image_x[0],
+                                                  int(structure_image_y[1] / 8))
+        size = (sum(structure_image_x) + arrow_image.size[0] * 2,
+                max(structure_image_y))
+        image = Image.new("RGBA", size, (255, 255, 255, 255))
+        paste_positions = [
+            # left structure
+            (0, int((max(structure_image_y) - structures[0].size[1]) / 2),),
+            # middle structure
+            (structure_image_x[0] + arrow_image.size[0],
+             int((max(structure_image_y) - structures[1].size[1]) / 2),),
+            # right structure
+            (sum(structure_image_x[:2]) + arrow_image.size[0] * 2,
+             int((max(structure_image_y) - structures[2].size[1]) / 2),),]
+        arrow_paste_positions = [
+            # left reaction arrow
+            (structure_image_x[0],
+             int(max(structure_image_y) / 2),),
+            # right reaction arrow
+            (sum(structure_image_x[:2]) + arrow_image.size[0],
+             int(max(structure_image_y) / 2),), ]
+        paste_positions += arrow_paste_positions
+        paste_images = structures
+        arrow_image_list = [
+            arrow_image.rotate(random.choice([180, 360]),
+                               expand=True,
+                               fillcolor=(255, 255, 255, 255)),
+            arrow_image,
+        ]
+        paste_images += arrow_image_list
+        image = self.paste_images(image, paste_positions, paste_images)
+        annotations += self.determine_arrow_annotations(arrow_image_list)
+        annotations = self.modify_annotations(annotations, paste_positions)
+        if random.choice([True, False]):
+            arrow_bboxes = self.get_bboxes(arrow_image_list, arrow_paste_positions)
+            image, reaction_condition_regions = self.insert_labels(
+                image, len(structures) - 1, "reaction_condition", arrow_bboxes
+            )
+            annotations += reaction_condition_regions
+        return image.convert("RGB"), annotations
+
+    def create_reaction_scheme_three_structures_vertical(
+        self,
+    ) -> Tuple:
+        """
+        This function generates a vertical reaction scheme with three chemical
+        structures and two reaction arrow between them.
+
+        Returns:
+            Tuple[Image, List]: Reaction scheme, annotation dicts
+        """
+        structures, annotations = self.generate_multiple_structures_with_annotation(3)
+        structure_image_x, structure_image_y = self.get_image_sizes(structures)
+        arrow_image = self.get_random_arrow_image(structure_image_x[0],
+                                                  int(structure_image_y[1] / 8))
+        size = (max(structure_image_x),
+                sum(structure_image_y) + arrow_image.size[0] * 2,)
+        image = Image.new("RGBA", size, (255, 255, 255, 255))
+        paste_positions = [
+            # upper structure
+            (int((max(structure_image_x) - structures[0].size[0]) / 2), 0,),
+            # middle structure
+            (int((max(structure_image_x) - structures[1].size[0]) / 2),
+                sum(structure_image_y[:1]) + arrow_image.size[0],),
+            # lower structure
+            (int((max(structure_image_x) - structures[2].size[0]) / 2),
+                sum(structure_image_y[:2]) + arrow_image.size[0] * 2,), ]
+        arrow_paste_positions = [
+            (
+                int(max(structure_image_x) / 2),
+                structure_image_y[0],
+            ),  # upper reaction arrow
+            (
+                int(max(structure_image_x) / 2),
+                sum(structure_image_y[:2]) + arrow_image.size[0],
+            ),
+        ]  # lower arrow
+        paste_positions += arrow_paste_positions
+        paste_images = structures
+        arrow_image_list = [
+            arrow_image.rotate(random.choice([90, 270]),
+                               expand=True,
+                               fillcolor=(255, 255, 255, 255)),
+            arrow_image.rotate(random.choice([90, 270]),
+                               expand=True,
+                               fillcolor=(255, 255, 255, 255)),
+        ]
+        paste_images += arrow_image_list
+        image = self.paste_images(image, paste_positions, paste_images)
+        annotations += self.determine_arrow_annotations(arrow_image_list)
+        annotations = self.modify_annotations(annotations, paste_positions)
+        if random.choice([True, False]):
+            arrow_bboxes = self.get_bboxes(arrow_image_list, arrow_paste_positions)
+            image, reaction_condition_regions = self.insert_labels(
+                image, len(structures) - 1, "reaction_condition", arrow_bboxes
+            )
+            annotations += reaction_condition_regions
+        return image.convert("RGB"), annotations
+
+    def create_reaction_scheme_five_structures(
+        self,
+    ) -> Tuple:
+        """
+        This function generates a reaction scheme with five chemical
+        structures and four reaction arrow between them.
+
+        Returns:
+            Tuple[Image, List]: Reaction scheme, annotation dicts
+        """
+        structures, annotations = self.generate_multiple_structures_with_annotation(2)
+        structure_image_x, structure_image_y = self.get_image_sizes(structures)
+        arrow_image = self.get_random_arrow_image(structure_image_x[0],
+                                                  int(structure_image_y[1] / 8))
+        init_scheme, init_annotations = self.create_reaction_scheme_three_structures_horizontal()
+        size = (init_scheme.size[0],
+                sum(structure_image_y) + arrow_image.size[0] * 2 + init_scheme.size[1],)
+        image = Image.new("RGBA", size, (255, 255, 255, 255))
+        image.paste(init_scheme, (0, arrow_image.size[0] + structure_image_y[0]))
+        init_annotations = self.modify_annotations(
+            [[reg_dict] for reg_dict in init_annotations],
+            [(0, arrow_image.size[0] + structure_image_y[0])] * len(init_annotations))
+
+        central_ann = self.get_central_structure_shape_annotation(init_annotations)
+        central_x_coords = central_ann["all_points_x"]
+        central_x = int(sum(central_x_coords) / len(central_x_coords))
+        central_y_coords = central_ann["all_points_y"]
+        cen = int(min(central_x_coords)+(max(central_x_coords)-min(central_x_coords))/2)
+        paste_positions = [
+            # upper structure
+            (cen - int(structures[0].size[0] / 2),
+             0,),
+            # lower structure
+            (cen - int(structures[1].size[0] / 2),
+             max(central_y_coords) + arrow_image.size[0])]
+        arrow_paste_positions = [
+            (central_x, min(central_y_coords) - arrow_image.size[0]),  # upper arrow
+            (central_x, max(central_y_coords))  # lower arrow
+        ]
+        paste_images = structures
+        arrow_image_list = [
+            arrow_image.rotate(random.choice([90, 270]),
+                               expand=True,
+                               fillcolor=(255, 255, 255, 255)),
+            arrow_image.rotate(random.choice([90, 270]),
+                               expand=True,
+                               fillcolor=(255, 255, 255, 255)),
+        ]
+        annotations += self.determine_arrow_annotations(arrow_image_list)
+        paste_positions += arrow_paste_positions
+        paste_images += arrow_image_list
+        image = self.paste_images(image, paste_positions, paste_images)
+        annotations = self.modify_annotations(annotations, paste_positions)
+        if random.choice([True, False]):
+            arrow_bboxes = self.get_bboxes(arrow_image_list, arrow_paste_positions)
+            image, reaction_condition_regions = self.insert_labels(
+                image, len(structures) - 1, "reaction_condition", arrow_bboxes
+            )
+            annotations += reaction_condition_regions
+        return image.convert("RGB"), annotations + init_annotations
+
+    def create_reaction_scheme_seven_structures(
+        self,
+    ) -> Tuple:
+        """
+        This function generates a reaction scheme with seven chemical
+        structures and six reaction arrow between them.
+
+        Returns:
+            Tuple[Image, List]: Reaction scheme, annotation dicts
+        """
+        structures, annotations = self.generate_multiple_structures_with_annotation(7)
+        structure_image_x, structure_image_y = self.get_image_sizes(structures)
+        arrow_image = self.get_random_arrow_image(structure_image_x[0],
+                                                  int(structure_image_y[1] / 8))
+        size = (sum([structure_image_x[n] for n in [0, 1, 2]])
+                + arrow_image.size[0] * 2,
+                sum([structure_image_y[n] for n in [1, 3, 4]])
+                + arrow_image.size[0] * 2,)
+        image = Image.new("RGBA", size, (255, 255, 255, 255))
+
+        # Horizontal reaction flow
+        paste_positions = [
+            (0,
+             int(structure_image_y[3] + arrow_image.size[0]
+                 + 0.5 * structure_image_y[1] - 0.5 * structure_image_y[0]),
+             ),  # left structure
+            (sum(structure_image_x[:1]) + arrow_image.size[0] * 1,
+             int(structure_image_y[3] + arrow_image.size[0]
+                 + 0.5 * structure_image_y[1] - 0.5 * structure_image_y[1]),
+             ),  # middle_structure
+            (sum(structure_image_x[:2]) + arrow_image.size[0] * 2,
+             int(structure_image_y[3] + arrow_image.size[0]
+                 + 0.5 * structure_image_y[1] - 0.5 * structure_image_y[2]),
+             ),  # right structure
+        ]
+        arrow_paste_positions = [
+            (sum(structure_image_x[:1]),
+             int(structure_image_y[3] + arrow_image.size[0]
+                 + 0.5 * structure_image_y[1]),),  # left arrow
+            (sum(structure_image_x[:2]) + arrow_image.size[0],
+             int(structure_image_y[3] + arrow_image.size[0]
+                 + 0.5 * structure_image_y[1]), ), ]  # right arrow
+
+        paste_images = structures[:3]
+        arrow_image_list = [
+            arrow_image.rotate(random.choice([0, 180]),
+                               expand=True, fillcolor=(255, 255, 255, 255)),
+            arrow_image.rotate(random.choice([0, 180]),
+                               expand=True, fillcolor=(255, 255, 255, 255)),
+        ]
+
+        # Add diagonal arrows and structures
+
+        # upper left
+        arrow_image_1 = arrow_image.rotate(random.choice([135, 315]),
+                                           expand=True, fillcolor=(255, 255, 255, 255))
+        arrow_paste_position_1 = (
+            paste_positions[1][0] - arrow_image_1.size[0],
+            paste_positions[1][1] - arrow_image_1.size[1],
+        )
+        structure_paste_position_1 = (
+            arrow_paste_position_1[0] - structure_image_x[3],
+            arrow_paste_position_1[1] - int(0.75 * structure_image_y[3]),
+        )
+        # upper right
+        arrow_image_2 = arrow_image.rotate(random.choice([45, 225]),
+                                           expand=True, fillcolor=(255, 255, 255, 255))
+        arrow_paste_position_2 = (
+            paste_positions[1][0] + structure_image_x[1],
+            paste_positions[1][1] - arrow_image_2.size[1],
+        )
+        structure_paste_position_2 = (
+            arrow_paste_position_2[0] + arrow_image_2.size[0],
+            arrow_paste_position_2[1] - int(0.75 * structure_image_y[4]),
+        )
+        # lower right
+        arrow_image_3 = arrow_image.rotate(random.choice([135, 315]),
+                                           expand=True, fillcolor=(255, 255, 255, 255))
+
+        arrow_paste_position_3 = (
+            paste_positions[1][0] + structure_image_x[1],
+            paste_positions[1][1] + structure_image_y[1],
+        )
+        structure_paste_position_3 = (
+            arrow_paste_position_3[0] + arrow_image_3.size[0],
+            arrow_paste_position_3[1]
+            + arrow_image_3.size[1]
+            - int(0.25 * structure_image_y[5]),
+        )
+        # lower left
+        arrow_image_4 = arrow_image.rotate(random.choice([45, 225]),
+                                           expand=True, fillcolor=(255, 255, 255, 255))
+
+        arrow_paste_position_4 = (
+            paste_positions[1][0] - arrow_image_4.size[0],
+            paste_positions[1][1] + structure_image_y[1],
+        )
+        structure_paste_position_4 = (
+            arrow_paste_position_4[0] - structure_image_x[6],
+            arrow_paste_position_4[1]
+            + arrow_image_4.size[1]
+            - int(0.25 * structure_image_y[6]),
+        )
+
+        # Only add structures and arrows that point at them if the structures fit
+        # in the image
+        annotated_regions_copy = deepcopy(annotations)
+        for n in range(1, 5):
+            if self.is_valid_position(
+                eval("structure_paste_position_" + str(n)),
+                image.size,
+                structures[2 + n].size, ):
+                arrow_paste_positions.append(eval("arrow_paste_position_" + str(n)))
+                arrow_image_list.append(eval("arrow_image_" + str(n)))
+                paste_images.append(structures[2 + n])
+                paste_positions.append(eval("structure_paste_position_" + str(n)))
+            else:
+                annotations.remove(annotated_regions_copy[2 + n])
+
+        annotations += self.determine_arrow_annotations(arrow_image_list)
+        paste_positions += arrow_paste_positions
+        paste_images += arrow_image_list
+
+        annotations = self.modify_annotations(
+            annotations, paste_positions
+        )
+        image = self.paste_images(image, paste_positions, paste_images)
+        if random.choice([True, False]):
+            arrow_bboxes = self.get_bboxes(arrow_image_list, arrow_paste_positions)
+            image, reaction_condition_regions = self.insert_labels(
+                image, len(structures) - 1, "reaction_condition", arrow_bboxes
+            )
+            annotations += reaction_condition_regions
+        return image.convert("RGB"), annotations
+
+    def get_central_structure_shape_annotation(self, annotations: List[Dict]) -> Dict:
+        """
+        This function takes the annotations returned from a scheme with three structures
+        and returns the shape attribute dict of the central structure.
+
+        Args:
+            annotations (List[Dict]): List of annotation dicts from scheme with three
+                                      structures
+
+        Returns:
+            Dict: shape attribute dict of central structure
+        """
+        
+        count = 0
+        for ann in annotations:
+            if ann["region_attributes"]["type"] == "chemical_structure":
+                if count == 1:
+                    return ann["shape_attributes"]
+                else:
+                    count += 1
 
     def determine_images_per_region(self, region: Tuple[int]) -> Tuple[int, int]:
         """
         This function takes the bounding box coordinates of a region and returns
         two integers which indicate how many chemical structure depictions should be
-        added (int1: vertical, int2: horizontal). The returned values depend on
-        the region size and a random influence.
+        added (int1: vertical, int2: horizontal) to a grid of chemical structures in
+        that region.
+        The returned values depend on the region size and a random influence.
 
         Args:
             region (Tuple[int]): paste region bounding box
@@ -1517,8 +1458,7 @@ class ChemPageSegmentationDatasetCreator:
         It pastes the given amount of depictions into the region and returns the image
         and list of tuples that contains the path(s), names, original shapes, modified
         shapes and the paste coordinates (min_y, min_x) of the pasted images for the
-        annotation creation. If binarise_half is set True, 50% of the pasted images
-        are binarised
+        annotation creation.
 
         Args:
             image (Image): Page image where the structure depictions etc are supposed
@@ -1527,8 +1467,7 @@ class ChemPageSegmentationDatasetCreator:
                                  pasted
             images_vertical (int): number of images in vertical direction
             images_horizontal (int): number of images in horizontal direction
-            paste_im_tpye (str): If true, half of the pasted images are binarised.
-                                 Defaults to True.
+            paste_im_type (str): scheme, structure, random
 
         Returns:
             Image, Dict: Page image with pasted elements, annotation information
@@ -1560,13 +1499,13 @@ class ChemPageSegmentationDatasetCreator:
             binarise_half = False
             if paste_im_type == "structure":
                 smiles = next(self.smiles_iterator)
-                paste_im, paste_im_annotation = self.generate_structure_and_annotation(
+                paste_im, paste_im_annotation = self.generate_structure_with_annotation(
                     smiles, label=random.choice([True, False])
                 )
             elif paste_im_type == "scheme":
                 paste_im, paste_im_annotation = self.create_reaction_scheme()
             elif paste_im_type == "random":
-                paste_im = Image.open(next(self.random_image_iterator))
+                paste_im = Image.open(next(self.random_images))
                 paste_im = paste_im.rotate(random.choice([0, 90, 180, 270]))
                 binarise_half = True
                 paste_im_annotation = False
@@ -1607,59 +1546,11 @@ class ChemPageSegmentationDatasetCreator:
                                                   mode="1")
                 image.paste(paste_im, (min_x, min_y))
             # Modify annotations according to resized pasted image
-            modified_chem_annotations = self.modify_annotations_PLN(
+            modified_chem_annotations = modify_annotations_PLN(
                 paste_im_annotation, paste_im_shape, modified_im_shape, (min_x, min_y)
             )
             pasted_element_annotation += modified_chem_annotations
         return image, pasted_element_annotation
-
-    '''def parallelisation_adjustment(self, parallel_call_number):
-        """
-        For the asynchronous function calls, we need to take care of:
-        - Iterators being at the right position (otherwise, we will paste the
-        same structures/images into the same PLN pages again and again)
-        - The seed of the random_depictor instance needs to be adjusted so that
-        it does not make the same "random" decisions over and over.
-        Args:
-            parallel_call_number ([type]): Page number
-        """
-        # JVM needs to be started
-        if not isJVMStarted():
-            jvmPath = getDefaultJVMPath()
-            jar_path = os.path.join(
-                RanDepict.__path__[0], "assets", "jar_files/cdk_2_5.jar"
-            )
-            startJVM(jvmPath, "-ea", "-Djava.class.path={}".format(jar_path))
-        # Set context for multiprocessing but make sure this only happens once
-        try:
-            set_start_method("spawn")
-        except RuntimeError:
-            pass
-        # Iterators need to be updated so that we don't work with the same images
-        # again and again
-        for _ in range(parallel_call_number):
-            # Find next page with a region to paste chemical elements
-            place_to_paste = False
-            while not place_to_paste:
-                page_annotation = next(self.annotation_iterator)
-                # Make sure only pages that contain a figure or a table are processed.
-                category_IDs = [
-                    annotation["category_id"] - 1
-                    for annotation in page_annotation["annotations"]
-                ]
-                found_categories = [
-                    self.PLN_annotations["categories"][category_ID]["name"]
-                    for category_ID in category_IDs
-                ]
-                if "figure" in found_categories:
-                    place_to_paste = True
-                # if 'table' in found_categories:
-                #    place_to_paste = True
-            next(self.random_image_iterator)
-            for _ in range(5):
-                next(self.smiles_iterator)
-        # Seed adjustment for random_depictor instance
-        self.depictor.seed = parallel_call_number'''
 
     def create_and_save_chemical_page(
         self, output_dir: str = "./ChemPLN_dataset/", parallel_call_number: int = False,
@@ -1689,56 +1580,3 @@ class ChemPageSegmentationDatasetCreator:
         except Exception as e:
             logging.info(f"The following exception occured: {e}")
         return metadata_dict
-
-    '''def create_and_save_chemical_pages(
-        self, number: int, output_dir: str = "./ChemPLN_dataset/",
-    ) -> List[Dict]:
-        """
-        This function does the same as create_and_save_chemical_page but for multiple
-        images. Instead of one metadata dict, a list of them is returned.
-
-        Returns:
-            number [int]: Number of pages to create
-            List[Dict]: List of metadata dicts with annotations
-        """
-        # Make sure information from all processes is logged.
-        annotations = []
-        # PLN_annotations = []
-        # Slim_down_PLN_annotation_iterator
-        # for n in range(number * 15):
-        #    PLN_annotations.append(next())
-        def get_result(annotation):
-            """
-            Helper function that is called when create_and_save_chemical_pages returns
-            a metadata dict which is then appended to the list of annotations.
-
-            Args:
-                annotation (Any): Result from create_and_save_chemical_pages
-            """
-            annotations.append(annotation)
-
-        # TODO: Make asynchronous calls work with with-statement.
-        # I tried it here but the results are not collected.
-        # Create dataset in parallel
-        q_listener, q = logger_init()
-        logging.info("Start dataset creation")
-        p = Pool(6, worker_init, [q])
-        for n in range(1, number + 1):
-            if n % 50 == 0:
-                p.close()
-                p.join()
-                p = Pool(6, worker_init, [q])
-            a = p.apply_async(
-                self.create_and_save_chemical_page,
-                args=([output_dir, n]),
-                callback=get_result,
-            )
-            # while p._taskqueue.qsize() > 10:
-            #    time.sleep(1)
-            #    print("Snoothing for a second...")
-            # print(a.get())
-        p.close()
-        p.join()
-        logging.info("Creation of images completed.")
-        q_listener.stop()
-        return annotations'''

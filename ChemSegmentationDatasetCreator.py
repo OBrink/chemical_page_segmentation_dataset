@@ -21,9 +21,9 @@ from annotation_utils import (load_PLN_annotations,
                               modify_annotations_PLN)
 
 
-class ChemPageSegmentationDatasetCreator:
+class ChemSegmentationDatasetCreator:
     """
-    The ChemPageSegmentationDatasetCreator class contains everything needed
+    The ChemSegmentationDatasetCreator class contains everything needed
     to generate a chemical page segmentation dataset based on PubLayNet.
     """
 

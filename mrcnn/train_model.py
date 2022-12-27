@@ -24,10 +24,12 @@ for gpu in gpus:
 # Root directory of the project
 ROOT_DIR = os.getcwd()
 dir_path = os.path.dirname(os.path.realpath(__file__))
+data_gen_path = os.path.join(dir_path, "../training_data_generation")
 
 # Import Mask RCNN
 sys.path.append(ROOT_DIR)
 sys.path.append(dir_path)
+sys.path.append(data_gen_path)
 from config import Config
 import utils
 import model as modellib
@@ -42,7 +44,6 @@ DEFAULT_LOGS_DIR = os.path.join(ROOT_DIR, "logs")
 ############################################################
 #  Configurations
 ############################################################
-
 
 class ChemSegmentConfig(Config):
     """Configuration for training on the toy  dataset.
@@ -86,8 +87,7 @@ class ChemPageDataset(utils.Dataset):
                            'text', 'title', 'table', 'list']
 
         # Dictionary that maps every class name (string) to an integer
-        self.category_dict = {category: index
-                              for index, category in enumerate(self.categories)}
+        self.category_dict = {category: index for index, category in enumerate(self.categories)}
 
     def load_mask(self, annotations: List[Dict], shape: Tuple[int, int]):
         """Generate instance masks for an image.

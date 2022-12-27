@@ -346,6 +346,14 @@ class ChemSegmentationDatasetCreator:
                 region_annotations.append(region_dict)
 
             return image, region_annotations
+        else:
+            image, region_annotations = self.generate_structure_with_annotation(
+                smiles="CN1C=NC2=C1C(=O)N(C(=O)N2C)C",
+                shape=shape,
+                label=label,
+                arrows=arrows
+            )
+            return image, region_annotations
 
     def pad_image(self, pil_image: Image, factor: float):
         """

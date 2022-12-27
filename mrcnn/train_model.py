@@ -43,6 +43,7 @@ DEFAULT_LOGS_DIR = os.path.join(ROOT_DIR, "logs")
 #  Configurations
 ############################################################
 
+
 class ChemSegmentConfig(Config):
     """Configuration for training on the toy  dataset.
     Derives from the base Config class and overrides some values.
@@ -69,17 +70,24 @@ class ChemSegmentConfig(Config):
 
 class ChemPageDataset(utils.Dataset):
 
-    def __init__(self):
+    def __init__(self, test_mode=False):
         super().__init__()
         # List of annotated classes
-        smiles_list = ["CN1C=NC2=C1C(=O)N(C(=O)N2C)C"]
+        if test_mode:
+            smiles_list = ["CN1C=NC2=C1C(=O)N(C(=O)N2C)C"]
+        else:
+            smiles_path = os.path.join(os.path.split(__file__)[0], "smiles.txt")
+            with open(smiles_path, 'r') as smiles_file:
+                smiles_list = [line[:-1].split(',')[1]
+                               for line in smiles_file.readlines()]
         self.data_creator = ChemSegmentationDatasetCreator(smiles_list)
 
         self.categories = ['BG', 'chemical_structure', 'arrow', 'chemical_label',
                            'text', 'title', 'table', 'list']
 
         # Dictionary that maps every class name (string) to an integer
-        self.category_dict = {category: index for index, category in enumerate(self.categories)}
+        self.category_dict = {category: index
+                              for index, category in enumerate(self.categories)}
 
     def load_mask(self, annotations: List[Dict], shape: Tuple[int, int]):
         """Generate instance masks for an image.

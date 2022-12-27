@@ -14,3 +14,5 @@
     `kaggle dataset download awsaf49/coco-2017-dataset`
 
 4) Unpack the COCO dataset. The images should be located at `training_data_generation/random_images/`. We used the images from the `train` subset.
+
+5) Download SMILES list from https://zenodo.org/record/5155037#.Y6r-9HbMK38 and save it as ´smiles.txt´ in training_data_generation. 

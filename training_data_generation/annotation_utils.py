@@ -129,7 +129,7 @@ def make_img_metadata_dict_from_PLN_annotations(
     return metadata_dict
 
 
-def load_PLN_annotations(PLN_dir: str, subset: str = "val") -> Dict:
+def load_PLN_annotations(PLN_dir: str, subset: str = "train") -> Dict:
     """
     This function loads the PubLayNet annotation dictionary and returns them in a
     clear format.The returned dictionary only contain entries where the images

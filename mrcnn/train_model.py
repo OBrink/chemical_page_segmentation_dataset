@@ -35,6 +35,9 @@ import utils
 import model as modellib
 from ChemSegmentationDatasetCreator import ChemSegmentationDatasetCreator
 
+import warnings
+warnings.filterwarnings("ignore")
+
 
 
 # Directory to save logs and model checkpoints, if not provided
@@ -59,7 +62,8 @@ class ChemSegmentConfig(Config):
     NUM_CLASSES = 1 + 7
 
     # Number of training steps per epoch
-    STEPS_PER_EPOCH = 2000
+    STEPS_PER_EPOCH = 1
+    VALIDATION_STEPS = 1
 
     # Skip detections with < 90% confidence
     DETECTION_MIN_CONFIDENCE = 0.9
@@ -79,7 +83,7 @@ class ChemPageDataset(utils.Dataset):
         else:
             smiles_path = os.path.join(os.path.split(__file__)[0], "smiles.txt")
             with open(smiles_path, 'r') as smiles_file:
-                smiles_list = [line[:-1].split(',')[1]
+                smiles_list = [line[:-1].split('\t')[1].replace(" ", "")
                                for line in smiles_file.readlines()]
         self.data_creator = ChemSegmentationDatasetCreator(smiles_list)
 
@@ -87,7 +91,8 @@ class ChemPageDataset(utils.Dataset):
                            'text', 'title', 'table', 'list']
 
         # Dictionary that maps every class name (string) to an integer
-        self.category_dict = {category: index for index, category in enumerate(self.categories)}
+        self.category_dict = {category: index for index, category
+                              in enumerate(self.categories)}
 
     def load_mask(self, annotations: List[Dict], shape: Tuple[int, int]):
         """Generate instance masks for an image.
@@ -99,7 +104,7 @@ class ChemPageDataset(utils.Dataset):
 
         # Convert polygons to a bitmap mask of shape
         # [height, width, instance_count]
-        # Create mask array and class ID array and fill them as given in the annotation file
+        # Create mask array and class ID array and fill them as given in the annotations
         IDs = []
         category_dict = self.category_dict
         annotations = [ann for ann in annotations
@@ -110,7 +115,7 @@ class ChemPageDataset(utils.Dataset):
         for i, region_dict in enumerate(annotations):
             if region_dict['region_attributes']['type'] in category_dict.keys():
                 shape_attributes = region_dict['shape_attributes']
-                
+
                 # Correct annotated pixels outside of the image
                 for index in range(len(shape_attributes['all_points_y'])):
                     if shape_attributes['all_points_y'][index] >= shape[0]:
@@ -141,32 +146,31 @@ class ChemPageDataset(utils.Dataset):
 def train(model):
     """Train the model."""
     # Training dataset.
+    import tensorflow.keras.models as KM
+    print("HERERERERE")
+    print(KM.__file__)
     dataset = ChemPageDataset()
-    dataset.load_ChemPageData(args.dataset, "train")
     dataset.prepare()
+    # *** This training schedule is an example. Update according to your needs ***
 
-    # *** This training schedule is an example. Update to your needs ***
-    print("Training network")
+    augmentation = iaa.Sometimes(
+        0.9,
+        iaa.SomeOf((1, 4), [
+            iaa.Affine(scale={"x": (0.5, 1.5), "y": (0.5, 1.5)}),
+            iaa.Flipud(1),
+            iaa.Fliplr(1),
+            iaa.OneOf([iaa.GaussianBlur(sigma=(0.0, 2.0)),
+                       iaa.imgcorruptlike.JpegCompression(severity=(1, 2)),
+                       iaa.imgcorruptlike.Pixelate(severity=(1, 2))]),
+            iaa.GammaContrast((2.0, 5.0)),
+            iaa.ChangeColorTemperature((1100, 10000))
+        ]))
 
-    augmentation = iaa.Sometimes(0.9,
-    iaa.SomeOf((1,4), [
-    iaa.Affine(scale={"x": (0.5, 1.5), "y": (0.5, 1.5)}),
-    iaa.Flipud(1),
-    iaa.Fliplr(1),
-    iaa.OneOf([iaa.GaussianBlur(sigma=(0.0, 2.0)),
-               iaa.imgcorruptlike.JpegCompression(severity=(1,2)),
-               iaa.imgcorruptlike.Pixelate(severity=(1,2))]),
-    iaa.GammaContrast((2.0, 5.0)),
-    iaa.ChangeColorTemperature((1100, 10000))
-    ]))
-    
-
-
-    model.train(dataset_train,
+    model.train(dataset,
                 learning_rate=config.LEARNING_RATE,
-                epochs=100,
+                epochs=10,
                 layers='all',
-                augmentation = augmentation)
+                augmentation=augmentation)
 
 
 ############################################################
@@ -179,12 +183,6 @@ if __name__ == '__main__':
     # Parse command line arguments
     parser = argparse.ArgumentParser(
         description='Train Mask R-CNN to detect elements in the chemical literature.')
-    parser.add_argument("command",
-                        metavar="<command>",
-                        help="'train' or 'splash'")
-    parser.add_argument('--dataset', required=False,
-                        metavar="/path/to/dataset/",
-                        help='Directory of the dataset')
     parser.add_argument('--weights', required=False,
                         metavar="/path/to/weights.h5",
                         help="Path to weights .h5 file or 'coco'")
@@ -194,33 +192,17 @@ if __name__ == '__main__':
                         help='Logs and checkpoints directory (default=logs/)')
     args = parser.parse_args()
 
-    # Validate arguments
-    if args.command == "train":
-        assert args.dataset, "Argument --dataset is required for training"
-
     print("Weights: ", args.weights)
-    print("Dataset: ", args.dataset)
+    print("Dataset: Automatically generated")
     print("Logs: ", args.logs)
 
     # Configurations
-    if args.command == "train":
-        config = ChemSegmentConfig()
-    else:
-        class InferenceConfig(ChemSegmentConfig):
-            # Set batch size to 1 since we'll be running inference on
-            # one image at a time. Batch size = GPU_COUNT * IMAGES_PER_GPU
-            GPU_COUNT = 1
-            IMAGES_PER_GPU = 1
-        config = InferenceConfig()
+    config = ChemSegmentConfig()
     config.display()
 
     # Create model
-    if args.command == "train":
-        model = modellib.MaskRCNN(mode="training", config=config,
-                                  model_dir=args.logs)
-    else:
-        model = modellib.MaskRCNN(mode="inference", config=config,
-                                  model_dir=args.logs)
+    model = modellib.MaskRCNN(mode="training", config=config,
+                              model_dir=args.logs)
 
     # Select weights file to load
     if args.weights:
@@ -238,10 +220,7 @@ if __name__ == '__main__':
         model.load_weights(weights_path, by_name=True, exclude=[
             "mrcnn_class_logits", "mrcnn_bbox_fc",
             "mrcnn_bbox", "mrcnn_mask", "anchors"])
-        #model.load_weights(weights_path, by_name=True, exclude=["mrcnn_mask"])
-        #model.load_weights(weights_path, by_name=True)
+        # model.load_weights(weights_path, by_name=True, exclude=["mrcnn_mask"])
+        # model.load_weights(weights_path, by_name=True)
 
-    # Train or evaluate
-    if args.command == "train":
-        train(model)
-
+    train(model)

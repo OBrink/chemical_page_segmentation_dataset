@@ -60,7 +60,7 @@ def log(text, array=None):
         else:
             text += ("min: {:10}  max: {:10}".format("",""))
         text += "  {}".format(array.dtype)
-    #print(text)
+    print(text)
 
 
 class BatchNorm(KL.BatchNormalization):
@@ -1763,18 +1763,10 @@ class DataGenerator(KU.Sequence):
 
     def __getitem__(self, idx):
         b = 0
-        image_index = -1
         while b < self.batch_size:
-            # Increment index to pick next image. Shuffle if at the start of an epoch.
-            image_index = (image_index + 1) % len(self.image_ids)
-
-            if self.shuffle and image_index == 0:
-                np.random.shuffle(self.image_ids)
-
             # Get GT bounding boxes and masks for image.
-            image_id = self.image_ids[image_index]
             image, image_meta, gt_class_ids, gt_boxes, gt_masks = \
-                load_image_gt(self.dataset, self.config, image_id,
+                load_image_gt(self.dataset, self.config, 1,
                               augmentation=self.augmentation)
 
             # Skip images that have no instances. This can happen in cases
@@ -2391,9 +2383,8 @@ class MaskRCNN(object):
             layers = layer_regex[layers]
 
         # Data generators
-        train_generator = DataGenerator(train_dataset, self.config, shuffle=True,
+        train_generator = DataGenerator(train_dataset, self.config, shuffle=False,
                                         augmentation=augmentation)
-        
 
         # Create log_dir if it does not exist
         if not os.path.exists(self.log_dir):
@@ -2412,18 +2403,18 @@ class MaskRCNN(object):
 
         # Train
         log("\nStarting at epoch {}. LR={}\n".format(self.epoch, learning_rate))
-        log("Checkpoint Path: {}".format(self.checkpoint_path))
+        log(f"Checkpoint Path: {self.checkpoint_path}")
         self.set_trainable(layers)
         self.compile(learning_rate, self.config.LEARNING_MOMENTUM)
 
         # Work-around for Windows: Keras fails on Windows when using
         # multiprocessing workers. See discussion here:
         # https://github.com/matterport/Mask_RCNN/issues/13#issuecomment-353124009
-        if os.name == 'nt':
-            workers = 0
-        else:
-            workers = multiprocessing.cpu_count()
-
+        # if os.name == 'nt':
+        #     workers = 0
+        # else:
+        #     workers = multiprocessing.cpu_count()
+        workers = 0
         self.keras_model.fit(
             train_generator,
             initial_epoch=self.epoch,

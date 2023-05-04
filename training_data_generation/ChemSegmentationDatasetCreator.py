@@ -222,7 +222,7 @@ class ChemSegmentationDatasetCreator:
     def get_random_COCO_image(self):
         """
         This function returns a random non-chemical image. In half of the cases,
-        it is returned as a binarised image.
+        it is returned as a binarised image (but still as an RGB image).
 
         ___
         Returns:
@@ -235,7 +235,7 @@ class ChemSegmentationDatasetCreator:
         if random.choice([True, False]):
             im = im.convert("L")
             im = im.point(lambda x: 255 if x > 150 else 0,
-                          mode="1")
+                          mode="1").convert("RGB")
         im = Image.fromarray(np.asarray(im))
         return im, []
 

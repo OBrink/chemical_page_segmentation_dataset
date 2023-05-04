@@ -363,6 +363,8 @@ def define_edge_line(
     """
     if node_1[0] - node_2[0] != 0:
         slope = (node_2[1] - node_1[1]) / (node_2[0] - node_1[0])
+    else:
+        slope = 0.99999
     # intercept = y - m*x
     intercept = node_1[1] - slope * node_1[0]
     return slope, intercept

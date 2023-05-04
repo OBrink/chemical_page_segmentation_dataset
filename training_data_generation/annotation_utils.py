@@ -129,7 +129,7 @@ def make_img_metadata_dict_from_PLN_annotations(
     return metadata_dict
 
 
-def load_PLN_annotations(PLN_dir: str, subset: str = "train") -> Dict:
+def load_PLN_annotations(PLN_dir: str, subset: str = "val") -> Dict:
     """
     This function loads the PubLayNet annotation dictionary and returns them in a
     clear format.The returned dictionary only contain entries where the images
@@ -255,6 +255,7 @@ def illustrate_annotations(image: Image, annotations: List[Dict]):
     """
     colour_dict = {
         'chemical_structure': (0, 255, 0, 50),
+        'chemical_label': (255, 0, 0, 50),
         'chemical_ID': (255, 0, 0, 50),
         'arrow': (0, 0, 255, 50),
         'R_group_label': (255, 255, 0, 50),

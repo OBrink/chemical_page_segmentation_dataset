@@ -244,9 +244,15 @@ class Dataset(object):
 
     def __init__(self, class_map=None):
         self._image_ids = []
-        self.image_info = []
+        self.image_info = [{"source": "", "id": num, "name": str(num)}
+                           for num in range(10000)]
         # Background is always the first class
         self.class_info = [{"source": "", "id": 0, "name": "BG"}]
+        for index, cat in list(enumerate(self.categories))[1:]:
+            self.add_class(cat, index, cat)
+        
+        # self.class_info = [{"source": "", "id": num, "name": name}
+        #                   for num, name in enumerate(self.categories)]
         self.source_class_ids = {}
 
     def add_class(self, source, class_id, class_name):
@@ -299,9 +305,11 @@ class Dataset(object):
 
         # Mapping from source class and image IDs to internal IDs
         self.class_from_source_map = {"{}.{}".format(info['source'], info['id']): id
-                                      for info, id in zip(self.class_info, self.class_ids)}
+                                      for info, id
+                                      in zip(self.class_info, self.class_ids)}
         self.image_from_source_map = {"{}.{}".format(info['source'], info['id']): id
-                                      for info, id in zip(self.image_info, self.image_ids)}
+                                      for info, id
+                                      in zip(self.image_info, self.image_ids)}
 
         # Map sources to class_ids they support
         self.sources = list(set([i['source'] for i in self.class_info]))

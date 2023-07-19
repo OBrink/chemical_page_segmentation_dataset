@@ -4,12 +4,12 @@
 
 import os
 from typing import List, Tuple, Dict
+import json
 import numpy as np
 from PIL import Image, ImageFont, ImageDraw, ImageStat
 import random
 from copy import deepcopy
 from itertools import cycle
-import logging
 from imantics import Polygons
 from skimage import morphology
 from polygon_bounding_box_determination import get_polygon_coordinates
@@ -28,10 +28,34 @@ class ChemSegmentationDatasetCreator:
     """
 
     def __init__(
-        self, smiles_list, load_PLN=True, PLN_annotation_number: int = False
+        self,
+        smiles_list: List[str] = None,
+        precomputed_depiction_path: str = None,
+        load_PLN=True,
+        PLN_annotation_number: int = False,
+        seed: int = 42
     ):
-        self.depictor = RanDepict.RandomDepictor()
-        self.smiles_iterator = cycle(smiles_list)
+        self.depictor = RanDepict.RandomDepictor(seed)
+        self.depictor._config.styles = list([style for style
+                                             in self.depictor._config.styles
+                                             if style != 'pikachu'])
+
+        if smiles_list:
+            self.smiles_iterator = cycle(smiles_list)
+        elif precomputed_depiction_path:
+            self.smiles_iterator = None
+            # We assume that image files end with ".png" and that the annotations are
+            # stored in a file with the same name but ending with ".json"
+            im_paths = [os.path.join(precomputed_depiction_path, filename) for filename
+                        in os.listdir(precomputed_depiction_path)
+                        if filename.endswith(".png")]
+            self.pregenerated_structure_and_annotation_generator = cycle(
+                (self.load_pregenerated_structure_and_annotation(im_path)
+                 for im_path in im_paths))
+        else:
+            raise AttributeError(
+                "Specify either smiles_list or precomputed_depiction_path")
+
         # Random images to be pasted (eg. COCO images) for diversification
         self.random_image_dir = os.path.join(
             os.path.split(__file__)[0],
@@ -81,6 +105,22 @@ class ChemSegmentationDatasetCreator:
             self.PLN_annotations = None
             self.annotation_iterator = None
 
+    def load_pregenerated_structure_and_annotation(self, im_path: str):
+        """
+        Loads a pregenerated structure and its annotation from a file.
+
+        Args:
+            im_path (str): path to image file
+
+        Returns:
+            Tuple[PIL.Image, Dict]: Image, annotation
+        """
+        image = Image.open(im_path)
+        annotation_path = im_path[:-3] + "json"
+        with open(annotation_path, "r") as annotation_file:
+            annotation = json.load(annotation_file)
+        return image, annotation
+
     def create_training_batch(self, batch_size: int) -> Tuple[List, List]:
         """
         Given a batch size, this function generates batch_size training images
@@ -96,7 +136,7 @@ class ChemSegmentationDatasetCreator:
             self.create_chemical_page,
             self.create_reaction_scheme,
             self.create_grid_of_chemical_structures,
-            self.get_random_COCO_image
+            # self.get_random_COCO_image
         ]
         images = []
         annotations = []
@@ -183,6 +223,8 @@ class ChemSegmentationDatasetCreator:
                 images_horizontal,
                 paste_im_type=paste_im_type,
             )
+            if not image:
+                return self.create_chemical_page()
             modified_annotations += pasted_structure_info
 
         modified_annotations = make_img_metadata_dict_from_PLN_annotations(
@@ -190,6 +232,8 @@ class ChemSegmentationDatasetCreator:
             modified_annotations,
             self.PLN_annotations["categories"],
         )
+        if image.mode != 'RGB':
+            image = image.convert('RGB')
         return image, modified_annotations['regions']
 
     def create_grid_of_chemical_structures(self):
@@ -212,6 +256,8 @@ class ChemSegmentationDatasetCreator:
                 images_horizontal,
                 paste_im_type="structure",
             )
+        if not image:
+            return self.create_grid_of_chemical_structures()
         annotations = make_img_metadata_dict_from_PLN_annotations(
             "test",
             pasted_structure_info,
@@ -237,6 +283,8 @@ class ChemSegmentationDatasetCreator:
             im = im.point(lambda x: 255 if x > 150 else 0,
                           mode="1").convert("RGB")
         im = Image.fromarray(np.asarray(im))
+        if im.mode != 'RGB':
+            im = im.convert('RGB')
         return im, []
 
     def generate_multiple_structures_with_annotation(
@@ -257,12 +305,15 @@ class ChemSegmentationDatasetCreator:
         structure_images: List = []
         annotated_regions: List = []
         for _ in range(number):
-            smiles = next(self.smiles_iterator)
-            side_len = random.choice(range(200, 400))
-            structure_image, annotation = self.generate_structure_with_annotation(
-                smiles, shape=(side_len, side_len),
-                label=random.choice([True, False])
-            )
+            if self.smiles_iterator:
+                smiles = next(self.smiles_iterator)
+                side_len = random.choice(range(200, 400))
+                structure_image, annotation = self.generate_structure_with_annotation(
+                    smiles, shape=(side_len, side_len),
+                    label=random.choice([True, False])
+                )
+            else:
+                structure_image, annotation = next(self.pregenerated_structure_and_annotation_generator)
             structure_images.append(structure_image)
             annotated_regions.append(annotation)
         return structure_images, annotated_regions
@@ -353,6 +404,8 @@ class ChemSegmentationDatasetCreator:
                 label=label,
                 arrows=arrows
             )
+            if image.mode != 'RGB':
+                image = image.convert('RGB')
             return image, region_annotations
 
     def pad_image(self, pil_image: Image, factor: float):
@@ -998,7 +1051,6 @@ class ChemSegmentationDatasetCreator:
         This function creates an artificial reaction scheme (PIL.Image) and an
         annotation dictionary that contains information about the regions of all
         included elements
-        
 
         Returns:
             Image: artificial reaction scheme
@@ -1014,6 +1066,8 @@ class ChemSegmentationDatasetCreator:
         scheme_generation_function = random.choice(scheme_generation_functions)
 
         reaction_scheme, annotations = scheme_generation_function()
+        if reaction_scheme.mode != 'RGB':
+            reaction_scheme = reaction_scheme.convert('RGB')
         return reaction_scheme, annotations
 
     def get_random_arrow_image(self, x: int, y: int) -> Image:
@@ -1123,7 +1177,7 @@ class ChemSegmentationDatasetCreator:
              int((max(structure_image_y) - structures[1].size[1]) / 2),),
             # right structure
             (sum(structure_image_x[:2]) + arrow_image.size[0] * 2,
-             int((max(structure_image_y) - structures[2].size[1]) / 2),),]
+             int((max(structure_image_y) - structures[2].size[1]) / 2),), ]
         arrow_paste_positions = [
             # left reaction arrow
             (structure_image_x[0],
@@ -1378,10 +1432,9 @@ class ChemSegmentationDatasetCreator:
         # in the image
         annotated_regions_copy = deepcopy(annotations)
         for n in range(1, 5):
-            if self.is_valid_position(
-                eval("structure_paste_position_" + str(n)),
-                image.size,
-                structures[2 + n].size, ):
+            if self.is_valid_position(eval("structure_paste_position_" + str(n)),
+                                      image.size,
+                                      structures[2 + n].size, ):
                 arrow_paste_positions.append(eval("arrow_paste_position_" + str(n)))
                 arrow_image_list.append(eval("arrow_image_" + str(n)))
                 paste_images.append(structures[2 + n])
@@ -1507,10 +1560,13 @@ class ChemSegmentationDatasetCreator:
             # Make sure that the type of pasted image is treated adequately
             binarise_half = False
             if paste_im_type == "structure":
-                smiles = next(self.smiles_iterator)
-                paste_im, paste_im_annotation = self.generate_structure_with_annotation(
-                    smiles, label=random.choice([True, False])
-                )
+                if self.smiles_iterator:
+                    smiles = next(self.smiles_iterator)
+                    paste_im, paste_im_annotation = self.generate_structure_with_annotation(
+                        smiles, label=random.choice([True, False])
+                    )
+                else:
+                    paste_im, paste_im_annotation = next(self.pregenerated_structure_and_annotation_generator)
             elif paste_im_type == "scheme":
                 paste_im, paste_im_annotation = self.create_reaction_scheme()
             elif paste_im_type == "random":
@@ -1554,9 +1610,12 @@ class ChemSegmentationDatasetCreator:
                         paste_im = paste_im.point(lambda x: 255 if x > 150 else 0,
                                                   mode="1")
                 image.paste(paste_im, (min_x, min_y))
+            else:
+                return None, None
             # Modify annotations according to resized pasted image
             modified_chem_annotations = modify_annotations_PLN(
                 paste_im_annotation, paste_im_shape, modified_im_shape, (min_x, min_y)
             )
             pasted_element_annotation += modified_chem_annotations
+
         return image, pasted_element_annotation

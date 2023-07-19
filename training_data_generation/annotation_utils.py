@@ -256,13 +256,14 @@ def illustrate_annotations(image: Image, annotations: List[Dict]):
     colour_dict = {
         'chemical_structure': (0, 255, 0, 50),
         'chemical_label': (255, 0, 0, 50),
-        'chemical_ID': (255, 0, 0, 50),
+        # 'chemical_ID': (255, 0, 0, 50),
         'arrow': (0, 0, 255, 50),
-        'R_group_label': (255, 255, 0, 50),
-        'reaction_condition_label': (0, 255, 255, 50),
+        # 'R_group_label': (255, 255, 0, 50),
+        # 'reaction_condition_label': (0, 255, 255, 50),
         'table': (255, 0, 255, 50),
         'text': (0, 100, 0, 50),
-        'title': (100, 0, 0, 50)
+        'title': (100, 0, 0, 50),
+        'list': (0, 0, 100, 50),
     }
 
     for region in annotations:

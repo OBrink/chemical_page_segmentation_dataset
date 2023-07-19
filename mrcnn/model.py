@@ -24,22 +24,19 @@ import tensorflow.keras.layers as KL
 import tensorflow.keras.utils as KU
 from tensorflow.python.eager import context
 import tensorflow.keras.models as KM
+import utils
 import warnings
-
+# Requires TensorFlow 2.0+
+from distutils.version import LooseVersion
+assert LooseVersion(tf.__version__) >= LooseVersion("2.0")
 
 warnings.simplefilter(action='ignore', category=FutureWarning)
 
-import utils
-
-os.environ["CUDA_VISIBLE_DEVICES"]="0"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 gpus = tf.config.experimental.list_physical_devices('GPU')
 for gpu in gpus:
     tf.config.experimental.set_memory_growth(gpu, True)
-
-# Requires TensorFlow 2.0+
-from distutils.version import LooseVersion
-assert LooseVersion(tf.__version__) >= LooseVersion("2.0")
 
 tf.compat.v1.disable_eager_execution()
 
@@ -1343,20 +1340,25 @@ def load_image_gt(dataset, config, image_id, augmentation=None):
     # Active classes
     # Different datasets have different classes, so track the
     # classes supported in the dataset of this image.
-    active_class_ids = np.zeros([dataset.num_classes], dtype=np.int32)
-    #source_class_ids = dataset.source_class_ids[dataset.image_info[image_id]["source"]]
-    #active_class_ids[source_class_ids] = 1
+    # {'region_attributes': {'type': 'text'}, 'shape_attributes': {'name': 'polygon', 'all_points_x': [50, 290, 290, 290, 290, 203, 203, 50, 50, 50, 50, 50], 'all_points_y': [421, 421, 436, 436, 447, 447, 458, 458, 445, 436, 436, 421]}}, {'region_attributes': {'type': 'text'}, 'shape_attributes': {'name': 'polygon', 'all_points_x': [65, 290, 290, 290, 290, 290, 290, 290, 290, 290, 290, 290, 290, 290, 290, 290, 290, 290, 290, 290, 290, 263, 263, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 65, 65], 'all_points_y': [456, 456, 470, 470, 479, 479, 492, 492, 504, 504, 513, 513, 525, 525, 538, 538, 547, 547, 561, 561, 572, 572, 583, 583, 572, 572, 557, 547, 536, 527, 527, 513, 502, 502, 489, 479, 468, 468, 456]}}, {'region_attributes': {'type': 'text'}, 'shape_attributes': {'name': 'polygon', 'all_points_x': [65, 290, 290, 290, 290, 290, 290, 290, 290, 290, 290, 290, 290, 50, 50, 50, 50, 50, 50, 65, 65], 'all_points_y': [581, 581, 595, 595, 604, 604, 618, 618, 627, 627, 640, 640, 652, 652, 638, 627, 615, 604, 593, 593, 581]}}, {'region_attributes': {'type': 'text'}, 'shape_attributes': {'name': 'polygon', 'all_points_x': [308, 548, 548, 548, 548, 548, 548, 548, 548, 548, 548, 548, 548, 548, 548, 548, 548, 548, 548, 548, 548, 548, 548, 548, 548, 548, 548, 548, 548, 548, 548, 517, 517, 308, 308, 308, 308, 308, 308, 308, 308, 308, 308, 308, 308, 308, 308, 308, 308, 308], 'all_points_y': [422, 422, 436, 436, 447, 447, 456, 456, 470, 470, 479, 479, 493, 493, 504, 504, 513, 513, 527, 527, 538, 538, 547, 547, 561, 561, 570, 570, 581, 581, 595, 595, 606, 606, 593, 581, 570, 559, 547, 536, 525, 513, 502, 490, 479, 468, 456, 445, 434, 422]}}, {'region_attributes': {'type': 'text'}, 'shape_attributes': {'name': 'polygon', 'all_points_x': [65, 290, 290, 290, 290, 290, 290, 290, 290, 290, 290, 290, 290, 290, 290, 290, 290, 50, 50, 50, 50, 50, 50, 50, 50, 65, 65], 'all_points_y': [650, 650, 661, 661, 674, 674, 686, 686, 695, 695, 708, 708, 718, 718, 731, 731, 743, 743, 729, 718, 706, 695, 684, 672, 661, 661, 650]}}, {'region_attributes': {'type': 'text'}, 'shape_attributes': {'name': 'polygon', 'all_points_x': [308, 548, 548, 548, 548, 548, 548, 548, 548, 548, 548, 548, 548, 548, 548, 548, 548, 308, 308, 308, 308, 308, 308, 308, 308, 308], 'all_points_y': [650, 650, 661, 661, 672, 672, 686, 686, 695, 695, 706, 706, 720, 720, 731, 731, 743, 743, 729, 718, 706, 695, 684, 672, 661, 650]}}, {'region_attributes': {'type': 'text'}, 'shape_attributes': {'name': 'polygon', 'all_points_x': [50, 548, 548, 548, 548, 300, 300, 50, 50, 50, 50], 'all_points_y': [365, 365, 376, 376, 388, 388, 398, 398, 386, 376, 365]}}, {'region_attributes': {'type': 'title'}, 'shape_attributes': {'name': 'polygon', 'all_points_x': [308, 383, 383, 308, 308], 'all_points_y': [631, 631, 643, 643, 631]}}, {'region_attributes': {'type': 'chemical_structure'}, 'shape_attributes': {'name': 'polygon', 'all_points_x': [101, 98, 96, 93, 86, 84, 81, 78, 80, 82, 73, 73, 75, 90, 94, 98, 101, 104, 110, 119, 128, 128, 126, 126, 124, 126, 126, 128, 128, 121, 110, 105], 'all_points_y': [98, 101, 103, 105, 104, 107, 111, 113, 116, 118, 125, 131, 138, 132, 134, 136, 136, 138, 139, 139, 139, 132, 123, 119, 116, 113, 109, 100, 91, 87, 94, 94]}}, {'region_attributes': {'type': 'chemical_label'}, 'shape_attributes': {'name': 'polygon', 'all_points_x': [73, 73, 95, 95], 'all_points_y': [80, 73, 73, 80]}}, {'region_attributes': {'type': 'chemical_structure'}, 'shape_attributes': {'name': 'polygon', 'all_points_x': [101, 97, 90, 82, 73, 73, 84, 81, 78, 81, 76, 73, 77, 86, 93, 98, 101, 106, 112, 120, 129, 123, 125, 128, 129, 121, 118, 127, 129, 125, 115, 106], 'all_points_y': [144, 144, 144, 144, 144, 154, 170, 173, 177, 180, 186, 198, 205, 206, 204, 200, 203, 211, 211, 211, 210, 192, 186, 181, 176, 173, 170, 159, 144, 144, 144, 144]}}, {'region_attributes': {'type': 'chemical_structure'}, 'shape_attributes': {'name': 'polygon', 'all_points_x': [107, 102, 100, 83, 73, 73, 73, 76, 76, 74, 74, 75, 79, 86, 93, 102, 108, 113, 118, 121, 138, 143, 143, 143, 143, 141, 129, 126, 122, 128, 120, 115], 'all_points_y': [216, 216, 224, 216, 216, 222, 229, 236, 240, 243, 247, 253, 260, 264, 264, 264, 264, 264, 260, 255, 260, 254, 249, 243, 239, 236, 234, 232, 229, 216, 216, 216]}}, {'region_attributes': {'type': 'chemical_structure'}, 'shape_attributes': {'name': 'polygon', 'all_points_x': [107, 101, 94, 86, 90, 89, 86, 82, 79, 73, 73, 73, 73, 84, 99, 103, 107, 114, 121, 130, 129, 140, 143, 143, 143, 143, 141, 132, 121, 118, 116, 113], 'all_points_y': [288, 288, 288, 288, 298, 302, 304, 306, 308, 311, 316, 321, 329, 329, 323, 325, 329, 329, 329, 329, 321, 319, 315, 311, 307, 304, 300, 298, 299, 297, 290, 288]}}, {'region_attributes': {'type': 'chemical_structure'}, 'shape_attributes': {'name': 'polygon', 'all_points_x': [170, 166, 162, 157, 148, 148, 148, 148, 148, 148, 148, 152, 157, 158, 162, 167, 171, 174, 178, 184, 193, 194, 194, 187, 189, 187, 190, 194, 191, 184, 179, 176], 'all_points_y': [73, 73, 73, 73, 74, 81, 92, 101, 106, 111, 117, 121, 125, 137, 139, 139, 139, 139, 138, 137, 136, 130, 118, 109, 106, 102, 96, 84, 77, 73, 73, 73]}}, {'region_attributes': {'type': 'chemical_structure'}, 'shape_attributes': {'name': 'polygon', 'all_points_x': [176, 172, 169, 165, 162, 161, 158, 155, 148, 148, 148, 148, 148, 158, 166, 173, 176, 181, 189, 197, 200, 203, 204, 207, 206, 203, 212, 209, 207, 199, 184, 181], 'all_points_y': [169, 171, 175, 176, 179, 181, 183, 184, 186, 188, 191, 195, 200, 200, 200, 196, 200, 200, 200, 200, 198, 194, 191, 188, 186, 184, 179, 175, 169, 164, 173, 167]}}, {'region_attributes': {'type': 'chemical_label'}, 'shape_attributes': {'name': 'polygon', 'all_points_x': [176, 176, 218, 218], 'all_points_y': [164, 144, 144, 164]}}, {'region_attributes': {'type': 'chemical_structure'}, 'shape_attributes': {'name': 'polygon', 'all_points_x': [180, 174, 165, 151, 148, 148, 148, 148, 148, 152, 155, 159, 167, 162, 169, 175, 180, 185, 194, 204, 208, 211, 213, 213, 213, 213, 212, 211, 208, 203, 192, 185], 'all_points_y': [236, 238, 235, 233, 243, 250, 255, 259, 263, 265, 268, 271, 271, 283, 283, 283, 283, 283, 283, 283, 280, 275, 270, 266, 263, 259, 256, 251, 245, 238, 238, 240]}}, {'region_attributes': {'type': 'chemical_label'}, 'shape_attributes': {'name': 'polygon', 'all_points_x': [189, 189, 213, 213], 'all_points_y': [229, 216, 216, 229]}}, {'region_attributes': {'type': 'chemical_structure'}, 'shape_attributes': {'name': 'polygon', 'all_points_x': [182, 177, 170, 148, 148, 148, 158, 157, 154, 157, 161, 164, 168, 171, 173, 177, 182, 188, 194, 193, 199, 218, 218, 218, 218, 207, 206, 218, 218, 211, 193, 188], 'all_points_y': [288, 288, 288, 288, 288, 295, 307, 310, 312, 315, 318, 320, 323, 325, 333, 338, 338, 338, 338, 325, 325, 329, 323, 317, 313, 310, 307, 294, 288, 288, 289, 288]}}, {'region_attributes': {'type': 'chemical_structure'}, 'shape_attributes': {'name': 'polygon', 'all_points_x': [241, 239, 237, 234, 224, 223, 223, 223, 225, 227, 229, 231, 233, 235, 237, 239, 241, 244, 249, 254, 261, 260, 262, 264, 266, 264, 262, 260, 260, 253, 248, 244], 'all_points_y': [79, 86, 89, 89, 84, 89, 95, 101, 105, 108, 110, 113, 116, 118, 121, 124, 126, 132, 132, 132, 132, 120, 115, 109, 105, 101, 95, 89, 79, 76, 74, 73]}}, {'region_attributes': {'type': 'chemical_label'}, 'shape_attributes': {'name': 'polygon', 'all_points_x': [278, 278, 294, 294], 'all_points_y': [73, 80, 80, 73]}}, {'region_attributes': {'type': 'chemical_structure'}, 'shape_attributes': {'name': 'polygon', 'all_points_x': [255, 251, 248, 237, 223, 223, 223, 224, 228, 231, 225, 226, 229, 238, 245, 250, 255, 261, 267, 279, 290, 290, 290, 283, 282, 278, 275, 272, 268, 265, 261, 258], 'all_points_y': [157, 160, 163, 151, 144, 157, 167, 177, 181, 184, 190, 197, 204, 206, 209, 211, 211, 211, 211, 211, 209, 199, 190, 184, 181, 178, 175, 172, 169, 166, 163, 160]}}, {'region_attributes': {'type': 'chemical_label'}, 'shape_attributes': {'name': 'polygon', 'all_points_x': [273, 273, 290, 290], 'all_points_y': [157, 144, 144, 157]}}, {'region_attributes': {'type': 'chemical_structure'}, 'shape_attributes': {'name': 'polygon', 'all_points_x': [249, 247, 244, 241, 238, 236, 233, 230, 228, 223, 223, 223, 223, 228, 239, 245, 249, 252, 256, 261, 265, 266, 269, 268, 276, 276, 276, 276, 276, 267, 259, 253], 'all_points_y': [219, 225, 229, 232, 235, 239, 242, 246, 249, 254, 261, 274, 283, 283, 283, 282, 279, 275, 275, 272, 269, 261, 257, 252, 248, 242, 235, 226, 216, 216, 216, 216]}}, {'region_attributes': {'type': 'chemical_structure'}, 'shape_attributes': {'name': 'polygon', 'all_points_x': [249, 244, 237, 228, 223, 223, 223, 223, 223, 223, 223, 223, 229, 234, 238, 244, 249, 254, 261, 270, 276, 276, 276, 276, 276, 276, 276, 276, 269, 264, 259, 254], 'all_points_y': [288, 288, 288, 288, 288, 292, 303, 308, 312, 317, 322, 329, 332, 337, 344, 344, 342, 344, 344, 344, 340, 333, 322, 316, 312, 308, 303, 296, 293, 288, 288, 288]}}, {'region_attributes': {'type': 'chemical_label'}, 'shape_attributes': {'name': 'polygon', 'all_points_x': [238, 238, 256, 256], 'all_points_y': [355, 352, 352, 355]}}, {'region_attributes': {'type': 'chemical_structure'}, 'shape_attributes': {'name': 'polygon', 'all_points_x': [322, 318, 313, 308, 300, 299, 299, 299, 302, 305, 307, 304, 302, 307, 313, 318, 322, 324, 332, 341, 347, 350, 338, 340, 345, 344, 342, 340, 341, 336, 331, 326], 'all_points_y': [73, 73, 73, 73, 74, 80, 84, 88, 91, 92, 94, 99, 107, 109, 109, 109, 109, 104, 109, 109, 109, 104, 95, 92, 91, 88, 85, 82, 75, 73, 73, 73]}}, {'region_attributes': {'type': 'chemical_label'}, 'shape_attributes': {'name': 'polygon', 'all_points_x': [355, 355, 369, 369], 'all_points_y': [79, 86, 86, 79]}}, {'region_attributes': {'type': 'chemical_structure'}, 'shape_attributes': {'name': 'polygon', 'all_points_x': [322, 320, 314, 306, 299, 299, 299, 299, 299, 299, 302, 308, 313, 315, 317, 320, 322, 324, 332, 338, 346, 346, 346, 346, 341, 339, 336, 334, 335, 331, 328, 325], 'all_points_y': [146, 151, 144, 144, 144, 154, 160, 165, 170, 174, 177, 179, 180, 183, 185, 188, 191, 188, 199, 199, 196, 187, 180, 174, 169, 167, 164, 162, 155, 152, 150, 145]}}, {'region_attributes': {'type': 'chemical_label'}, 'shape_attributes': {'name': 'polygon', 'all_points_x': [340, 340, 346, 346], 'all_points_y': [207, 211, 211, 207]}}, {'region_attributes': {'type': 'chemical_structure'}, 'shape_attributes': {'name': 'polygon', 'all_points_x': [327, 323, 319, 311, 300, 299, 299, 299, 303, 302, 299, 299, 302, 312, 319, 324, 328, 333, 338, 346, 351, 357, 357, 357, 357, 357, 357, 354, 346, 344, 338, 333], 'all_points_y': [216, 217, 220, 219, 219, 226, 235, 243, 249, 253, 262, 271, 279, 278, 278, 281, 283, 283, 283, 282, 275, 269, 261, 254, 249, 244, 237, 230, 227, 216, 216, 216]}}, {'region_attributes': {'type': 'chemical_structure'}, 'shape_attributes': {'name': 'polygon', 'all_points_x': [334, 330, 326, 323, 317, 299, 299, 299, 299, 299, 302, 303, 304, 307, 320, 330, 334, 340, 351, 357, 360, 369, 369, 369, 369, 369, 365, 364, 365, 357, 343, 337], 'all_points_y': [290, 291, 293, 295, 295, 292, 296, 300, 302, 305, 307, 311, 316, 318, 318, 314, 315, 318, 318, 318, 314, 312, 308, 305, 302, 300, 297, 294, 288, 288, 288, 291]}}, {'region_attributes': {'type': 'chemical_structure'}, 'shape_attributes': {'name': 'polygon', 'all_points_x': [400, 397, 390, 383, 374, 374, 374, 374, 379, 381, 379, 381, 385, 390, 392, 396, 401, 405, 411, 419, 427, 427, 427, 427, 427, 419, 416, 414, 411, 408, 406, 403], 'all_points_y': [79, 82, 73, 73, 73, 83, 92, 100, 106, 109, 115, 120, 124, 128, 139, 139, 139, 139, 139, 139, 137, 126, 117, 110, 105, 102, 99, 96, 92, 89, 86, 82]}}, {'region_attributes': {'type': 'chemical_structure'}, 'shape_attributes': {'name': 'polygon', 'all_points_x': [401, 398, 395, 392, 390, 387, 384, 381, 378, 381, 384, 374, 374, 379, 389, 397, 400, 405, 409, 414, 421, 422, 425, 423, 429, 429, 429, 429, 427, 419, 410, 405], 'all_points_y': [147, 153, 157, 160, 163, 167, 170, 174, 177, 180, 184, 200, 211, 211, 211, 208, 211, 211, 207, 204, 200, 192, 186, 180, 176, 170, 164, 145, 144, 144, 144, 144]}}, {'region_attributes': {'type': 'chemical_structure'}, 'shape_attributes': {'name': 'polygon', 'all_points_x': [408, 405, 401, 396, 392, 390, 388, 386, 384, 388, 388, 390, 394, 398, 402, 406, 409, 412, 416, 422, 427, 427, 427, 427, 427, 427, 427, 427, 424, 419, 414, 412], 'all_points_y': [216, 216, 216, 216, 218, 224, 229, 233, 236, 240, 245, 250, 254, 256, 258, 261, 263, 261, 258, 259, 260, 252, 245, 239, 236, 233, 228, 223, 218, 216, 217, 216]}}, {'region_attributes': {'type': 'chemical_label'}, 'shape_attributes': {'name': 'polygon', 'all_points_x': [374, 374, 410, 410], 'all_points_y': [283, 279, 279, 283]}}, {'region_attributes': {'type': 'chemical_structure'}, 'shape_attributes': {'name': 'polygon', 'all_points_x': [399, 396, 394, 391, 388, 385, 383, 377, 374, 374, 374, 374, 374, 380, 388, 395, 399, 402, 405, 408, 416, 422, 426, 426, 426, 426, 426, 426, 426, 417, 410, 404], 'all_points_y': [293, 296, 300, 303, 307, 310, 314, 317, 320, 326, 333, 345, 355, 355, 355, 355, 355, 345, 342, 339, 341, 338, 331, 326, 320, 314, 306, 292, 288, 288, 288, 288]}}, {'region_attributes': {'type': 'chemical_structure'}, 'shape_attributes': {'name': 'polygon', 'all_points_x': [465, 463, 462, 460, 456, 449, 449, 449, 449, 449, 449, 449, 452, 456, 460, 463, 465, 469, 472, 477, 480, 483, 485, 486, 488, 486, 485, 483, 481, 476, 471, 469], 'all_points_y': [74, 77, 85, 87, 86, 86, 91, 95, 98, 102, 106, 112, 116, 118, 120, 121, 121, 121, 121, 121, 116, 110, 106, 102, 98, 94, 90, 85, 79, 76, 74, 73]}}, {'region_attributes': {'type': 'chemical_label'}, 'shape_attributes': {'name': 'polygon', 'all_points_x': [500, 500, 520, 520], 'all_points_y': [73, 82, 82, 73]}}, {'region_attributes': {'type': 'chemical_structure'}, 'shape_attributes': {'name': 'polygon', 'all_points_x': [479, 475, 471, 465, 461, 453, 451, 449, 455, 460, 462, 463, 465, 469, 471, 475, 479, 483, 488, 489, 490, 491, 494, 496, 499, 496, 504, 504, 503, 493, 485, 483], 'all_points_y': [144, 144, 144, 145, 150, 152, 158, 162, 166, 168, 171, 175, 178, 181, 189, 191, 193, 191, 189, 181, 176, 172, 170, 168, 166, 163, 159, 152, 145, 145, 149, 144]}}, {'region_attributes': {'type': 'chemical_label'}, 'shape_attributes': {'name': 'polygon', 'all_points_x': [449, 449, 466, 466], 'all_points_y': [201, 211, 211, 201]}}, {'region_attributes': {'type': 'chemical_structure'}, 'shape_attributes': {'name': 'polygon', 'all_points_x': [484, 480, 471, 458, 449, 449, 449, 455, 455, 459, 462, 463, 466, 471, 477, 480, 484, 490, 499, 517, 520, 520, 520, 520, 520, 509, 506, 502, 499, 495, 491, 488], 'all_points_y': [219, 222, 216, 216, 216, 222, 229, 237, 240, 242, 245, 249, 252, 255, 255, 258, 260, 264, 264, 264, 264, 257, 249, 243, 239, 237, 234, 232, 229, 227, 224, 222]}}, {'region_attributes': {'type': 'chemical_structure'}, 'shape_attributes': {'name': 'polygon', 'all_points_x': [477, 472, 466, 459, 452, 449, 449, 449, 449, 456, 459, 463, 465, 469, 471, 473, 477, 483, 488, 500, 508, 511, 512, 505, 508, 508, 505, 502, 490, 486, 484, 480], 'all_points_y': [291, 288, 288, 288, 290, 296, 301, 305, 309, 311, 313, 315, 317, 320, 321, 331, 335, 333, 331, 336, 330, 323, 317, 312, 309, 305, 302, 298, 300, 298, 296, 294]}}, {'region_attributes': {'type': 'chemical_label'}, 'shape_attributes': {'name': 'polygon', 'all_points_x': [498, 498, 512, 512], 'all_points_y': [350, 355, 355, 350]}}]
+    active_classes = [annotation_dict['region_attributes']['type']
+                      for annotation_dict in annotations]
 
+    # active_class_ids = np.zeros([dataset.num_classes], dtype=np.int32)
+    active_class_ids = np.ones([dataset.num_classes], dtype=np.int32)
+    # source_class_ids = dataset.source_class_ids[dataset.image_info[image_id]["source"]]
+    source_class_ids = [dataset.category_dict[category]
+                        for category in active_classes]
+    # dataset.source_class_ids[dataset.image_info[image_id]["source"]]
+    active_class_ids[source_class_ids] = 1
     # Resize masks to smaller size to reduce memory usage
-    # if config.USE_MINI_MASK:
-    #     mask = utils.minimize_mask(bbox, mask, config.MINI_MASK_SHAPE)
+    if config.USE_MINI_MASK:
+        mask = utils.minimize_mask(bbox, mask, config.MINI_MASK_SHAPE)
 
     # Image meta data
     image_meta = compose_image_meta(image_id, original_shape, image.shape,
                                     window, scale, active_class_ids)
-
     return image, image_meta, class_ids, bbox, mask
-
 
 def build_detection_targets(rpn_rois, gt_class_ids, gt_boxes, gt_masks, config):
     """Generate targets for training Stage 2 classifier and mask heads.
@@ -1739,7 +1741,8 @@ class DataGenerator(KU.Sequence):
     def __init__(self, dataset, config, shuffle=True, augmentation=None,
                  random_rois=0, detection_targets=False):
 
-        self.image_ids = np.copy(dataset.image_ids)
+        # self.image_ids = np.copy(dataset.image_ids)
+        self.image_ids = np.array(range(config.STEPS_PER_EPOCH))
         self.dataset = dataset
         self.config = config
 
@@ -2204,16 +2207,17 @@ class MaskRCNN(object):
         """
         # Optimizer object
         # ORIGINAL
-        optimizer = keras.optimizers.SGD(
-            lr=learning_rate, momentum=momentum,
-            clipnorm=self.config.GRADIENT_CLIP_NORM)
-        # My attempts:
-        #optimizer = keras.optimizers.Adam(learning_rate=0.001, 
-        #    beta_1=0.9, 
-        #    beta_2=0.999, 
-        #    epsilon=0.1, 
+        #optimizer = keras.optimizers.SGD(
+        #    lr=learning_rate,
+        #    momentum=momentum,
         #    clipnorm=self.config.GRADIENT_CLIP_NORM)
-
+        # My attempts:
+        optimizer = keras.optimizers.legacy.Adam(
+                         learning_rate=0.001,
+                         beta_1=0.9,
+                         beta_2=0.999,
+                         epsilon=0.1,
+                         clipnorm=self.config.GRADIENT_CLIP_NORM)
 
         # Add Losses
         loss_names = [

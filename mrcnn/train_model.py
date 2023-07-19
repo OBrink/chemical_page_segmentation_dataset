@@ -54,17 +54,13 @@ class ChemSegmentConfig(Config):
     """
     # Give the configuration a recognizable name
     NAME = "ChemSegment"
-
     # Adjust down if you use a smaller GPU.
-    IMAGES_PER_GPU = 2
-
+    IMAGES_PER_GPU = 4
     # Number of classes (including background)
-    NUM_CLASSES = 1 + 7
-
+    NUM_CLASSES = 1 + 7  # Background + 7 classes
     # Number of training steps per epoch
-    STEPS_PER_EPOCH = 1
-    VALIDATION_STEPS = 1
-
+    STEPS_PER_EPOCH = 250
+    # VALIDATION_STEPS = 1
     # Skip detections with < 90% confidence
     DETECTION_MIN_CONFIDENCE = 0.9
 
@@ -75,20 +71,31 @@ class ChemSegmentConfig(Config):
 
 class ChemPageDataset(utils.Dataset):
 
-    def __init__(self, test_mode=False):
+    def __init__(
+        self,
+        smiles_path: str = None,
+        pregenerated_depiction_path: str = None,
+        test_mode=False
+    ):
+        self.categories = ['BG', 'chemical_structure', 'arrow', 'chemical_label',
+                           'text', 'title', 'table', 'list']
         super().__init__()
         # List of annotated classes
         if test_mode:
             smiles_list = ["CN1C=NC2=C1C(=O)N(C(=O)N2C)C"]
-        else:
+            self.data_creator = ChemSegmentationDatasetCreator(smiles_list,)
+        elif smiles_path:
             smiles_path = os.path.join(os.path.split(__file__)[0], "smiles.txt")
             with open(smiles_path, 'r') as smiles_file:
                 smiles_list = [line[:-1].split('\t')[1].replace(" ", "")
                                for line in smiles_file.readlines()]
-        self.data_creator = ChemSegmentationDatasetCreator(smiles_list)
-
-        self.categories = ['BG', 'chemical_structure', 'arrow', 'chemical_label',
-                           'text', 'title', 'table', 'list']
+            self.data_creator = ChemSegmentationDatasetCreator(smiles_list,)
+        elif pregenerated_depiction_path:
+            self.data_creator = ChemSegmentationDatasetCreator(
+                precomputed_depiction_path=pregenerated_depiction_path)
+        else:
+            raise AttributeError(
+                "No smiles file path or pregenerated depiction path given")
 
         # Dictionary that maps every class name (string) to an integer
         self.category_dict = {category: index for index, category
@@ -143,15 +150,16 @@ class ChemPageDataset(utils.Dataset):
             super(self.__class__, self).image_reference(image_id)
 
 
-def train(model):
+def train(
+    model,
+    smiles_path: str = None,
+    pregenerated_depiction_path: str = None,
+    test_mode: bool = False
+):
     """Train the model."""
     # Training dataset.
-    import tensorflow.keras.models as KM
-    print("HERERERERE")
-    print(KM.__file__)
-    dataset = ChemPageDataset()
+    dataset = ChemPageDataset(smiles_path, pregenerated_depiction_path, test_mode)
     dataset.prepare()
-    # *** This training schedule is an example. Update according to your needs ***
 
     augmentation = iaa.Sometimes(
         0.9,
@@ -165,10 +173,9 @@ def train(model):
             iaa.GammaContrast((2.0, 5.0)),
             iaa.ChangeColorTemperature((1100, 10000))
         ]))
-
     model.train(dataset,
                 learning_rate=config.LEARNING_RATE,
-                epochs=10,
+                epochs=500,
                 layers='all',
                 augmentation=augmentation)
 
@@ -190,6 +197,13 @@ if __name__ == '__main__':
                         default=DEFAULT_LOGS_DIR,
                         metavar="/path/to/logs/",
                         help='Logs and checkpoints directory (default=logs/)')
+    parser.add_argument('--smiles_file',
+                        required=False,
+                        help='Smiles file to use for generation of depictions')
+    parser.add_argument('--pregenerated_structure_path',
+                        required=False,
+                        help='Path with pregenerated of depictions for training')
+    
     args = parser.parse_args()
 
     print("Weights: ", args.weights)
@@ -211,7 +225,6 @@ if __name__ == '__main__':
             weights_path = model.find_last()[1]
         else:
             weights_path = args.weights
-
         # Load weights
         print("Loading weights ", weights_path)
         # Added anchors here as for some reason they cannot be loaded from DECIMER
@@ -223,4 +236,4 @@ if __name__ == '__main__':
         # model.load_weights(weights_path, by_name=True, exclude=["mrcnn_mask"])
         # model.load_weights(weights_path, by_name=True)
 
-    train(model)
+    train(model, args.smiles_file, args.pregenerated_structure_path )

@@ -1348,7 +1348,8 @@ def load_image_gt(dataset, config, image_id, augmentation=None):
     active_class_ids = np.ones([dataset.num_classes], dtype=np.int32)
     # source_class_ids = dataset.source_class_ids[dataset.image_info[image_id]["source"]]
     source_class_ids = [dataset.category_dict[category]
-                        for category in active_classes]
+                        for category in active_classes
+                        if category in dataset.category_dict.keys()]
     # dataset.source_class_ids[dataset.image_info[image_id]["source"]]
     active_class_ids[source_class_ids] = 1
     # Resize masks to smaller size to reduce memory usage

@@ -57,7 +57,7 @@ class ChemSegmentConfig(Config):
     # Adjust down if you use a smaller GPU.
     IMAGES_PER_GPU = 4
     # Number of classes (including background)
-    NUM_CLASSES = 1 + 7  # Background + 7 classes
+    NUM_CLASSES = 1 + 1  # Background + chemical structures
     # Number of training steps per epoch
     STEPS_PER_EPOCH = 250
     # VALIDATION_STEPS = 1
@@ -77,8 +77,7 @@ class ChemPageDataset(utils.Dataset):
         pregenerated_depiction_path: str = None,
         test_mode=False
     ):
-        self.categories = ['BG', 'chemical_structure', 'arrow', 'chemical_label',
-                           'text', 'title', 'table', 'list']
+        self.categories = ['BG', 'chemical_structure']
         super().__init__()
         # List of annotated classes
         if test_mode:

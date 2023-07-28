@@ -136,7 +136,7 @@ class ChemSegmentationDatasetCreator:
             self.create_chemical_page,
             self.create_reaction_scheme,
             self.create_grid_of_chemical_structures,
-            # self.get_random_COCO_image
+            self.get_random_COCO_image
         ]
         images = []
         annotations = []

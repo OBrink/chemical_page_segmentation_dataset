@@ -16,6 +16,8 @@ import numpy as np
 from typing import List, Dict, Tuple
 import skimage.draw
 
+
+
 os.environ['CUDA_VISIBLE_DEVICES'] = "0"
 gpus = tf.config.experimental.list_physical_devices('GPU')
 for gpu in gpus:
@@ -33,11 +35,13 @@ sys.path.append(data_gen_path)
 from config import Config
 import utils
 import model as modellib
-from ChemSegmentationDatasetCreator import ChemSegmentationDatasetCreator
 
 import warnings
 warnings.filterwarnings("ignore")
 
+
+
+from ChemSegmentationDatasetCreator import ChemSegmentationDatasetCreator
 
 
 # Directory to save logs and model checkpoints, if not provided
@@ -47,6 +51,7 @@ DEFAULT_LOGS_DIR = os.path.join(ROOT_DIR, "logs")
 ############################################################
 #  Configurations
 ############################################################
+
 
 class ChemSegmentConfig(Config):
     """Configuration for training on the toy  dataset.
@@ -161,7 +166,7 @@ def train(
     dataset.prepare()
 
     augmentation = iaa.Sometimes(
-        0.9,
+        0.2,
         iaa.SomeOf((1, 4), [
             iaa.Affine(scale={"x": (0.5, 1.5), "y": (0.5, 1.5)}),
             iaa.Flipud(1),
@@ -229,10 +234,14 @@ if __name__ == '__main__':
         # Added anchors here as for some reason they cannot be loaded from DECIMER
         # Segmentation model It was also added to the 'heads' to train as they are
         # not pre-trained.
-        model.load_weights(weights_path, by_name=True, exclude=[
-            "mrcnn_class_logits", "mrcnn_bbox_fc",
-            "mrcnn_bbox", "mrcnn_mask", "anchors"])
+        #model.load_weights(weights_path, by_name=True, exclude=[
+        #    #"mrcnn_class_logits",
+        #    #"mrcnn_bbox_fc",
+        #    #"mrcnn_bbox",
+        #    #"mrcnn_mask",
+        #    "anchors"
+        #    ])
         # model.load_weights(weights_path, by_name=True, exclude=["mrcnn_mask"])
-        # model.load_weights(weights_path, by_name=True)
+        #model.load_weights(weights_path, by_name=True)
 
-    train(model, args.smiles_file, args.pregenerated_structure_path )
+    train(model, args.smiles_file, args.pregenerated_structure_path)

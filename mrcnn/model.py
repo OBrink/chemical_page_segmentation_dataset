@@ -15,6 +15,7 @@ import datetime
 import re
 import math
 from collections import OrderedDict
+import mlflow
 import multiprocessing
 import numpy as np
 import tensorflow as tf
@@ -28,6 +29,7 @@ import utils
 import warnings
 # Requires TensorFlow 2.0+
 from distutils.version import LooseVersion
+
 assert LooseVersion(tf.__version__) >= LooseVersion("2.0")
 
 warnings.simplefilter(action='ignore', category=FutureWarning)
@@ -2214,7 +2216,7 @@ class MaskRCNN(object):
         #    clipnorm=self.config.GRADIENT_CLIP_NORM)
         # My attempts:
         optimizer = keras.optimizers.legacy.Adam(
-                         learning_rate=0.001,
+                         learning_rate=learning_rate,
                          beta_1=0.9,
                          beta_2=0.999,
                          epsilon=0.1,
@@ -2368,7 +2370,7 @@ class MaskRCNN(object):
             defined in the Dataset class.
         """
         assert self.mode == "training", "Create model in training mode."
-
+        mlflow.tensorflow.autolog()
         # Pre-defined layer regular expressions
         layer_regex = {
             # mrcnn (bbox, mask, class)

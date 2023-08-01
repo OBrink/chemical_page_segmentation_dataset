@@ -60,11 +60,11 @@ class ChemSegmentationDatasetCreator:
         self.random_image_dir = os.path.join(
             os.path.split(__file__)[0],
             "./random_images/")
+        random_image_list = os.listdir(self.random_image_dir)
+        random.shuffle(random_image_list)
         self.random_images = cycle(
-            [
-                os.path.join(self.random_image_dir, im)
-                for im in os.listdir(self.random_image_dir)
-            ]
+            [os.path.join(self.random_image_dir, im)
+             for im in random_image_list]
         )
         # PubLayNet images
         self.PLN_dir = os.path.join(
@@ -136,7 +136,7 @@ class ChemSegmentationDatasetCreator:
             self.create_chemical_page,
             self.create_reaction_scheme,
             self.create_grid_of_chemical_structures,
-            self.get_random_COCO_image
+            # self.get_random_COCO_image
         ]
         images = []
         annotations = []
@@ -1558,21 +1558,22 @@ class ChemSegmentationDatasetCreator:
         for paste_region in paste_regions:
             min_x, max_x, min_y, max_y = paste_region
             # Make sure that the type of pasted image is treated adequately
-            binarise_half = False
             if paste_im_type == "structure":
-                if self.smiles_iterator:
-                    smiles = next(self.smiles_iterator)
-                    paste_im, paste_im_annotation = self.generate_structure_with_annotation(
-                        smiles, label=random.choice([True, False])
-                    )
+                if self.depictor.random_choice([True, True, True, False]):
+                    if self.smiles_iterator:
+                        smiles = next(self.smiles_iterator)
+                        paste_im, paste_im_annotation = self.generate_structure_with_annotation(
+                            smiles, label=random.choice([True, False])
+                        )
+                    else:
+                        paste_im, paste_im_annotation = next(self.pregenerated_structure_and_annotation_generator)
                 else:
-                    paste_im, paste_im_annotation = next(self.pregenerated_structure_and_annotation_generator)
+                    paste_im, _ = self.get_random_COCO_image()
+                    paste_im_annotation = False
             elif paste_im_type == "scheme":
                 paste_im, paste_im_annotation = self.create_reaction_scheme()
             elif paste_im_type == "random":
-                paste_im = Image.open(next(self.random_images))
-                paste_im = paste_im.rotate(random.choice([0, 90, 180, 270]))
-                binarise_half = True
+                paste_im, _ = self.get_random_COCO_image()
                 paste_im_annotation = False
 
             paste_im_shape = paste_im.size
@@ -1603,12 +1604,6 @@ class ChemSegmentationDatasetCreator:
                     modified_im_shape = (max_x - min_x, max_y - min_y)
                 resize_method = random.choice([3, 4, 5])
                 paste_im = paste_im.resize(modified_im_shape, resample=resize_method)
-                # Binarize half of the images if desired
-                if binarise_half:
-                    if random.choice([True, False]):
-                        paste_im = paste_im.convert("L")
-                        paste_im = paste_im.point(lambda x: 255 if x > 150 else 0,
-                                                  mode="1")
                 image.paste(paste_im, (min_x, min_y))
             else:
                 return None, None

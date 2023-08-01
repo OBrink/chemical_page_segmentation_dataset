@@ -18,10 +18,10 @@ import skimage.draw
 
 
 
-os.environ['CUDA_VISIBLE_DEVICES'] = "0"
-gpus = tf.config.experimental.list_physical_devices('GPU')
-for gpu in gpus:
-    tf.config.experimental.set_memory_growth(gpu, True)
+# os.environ['CUDA_VISIBLE_DEVICES'] = "0"
+# gpus = tf.config.experimental.list_physical_devices('GPU')
+# for gpu in gpus:
+#     tf.config.experimental.set_memory_growth(gpu, True)
 
 # Root directory of the project
 ROOT_DIR = os.getcwd()
@@ -61,6 +61,7 @@ class ChemSegmentConfig(Config):
     NAME = "ChemSegment"
     # Adjust down if you use a smaller GPU.
     IMAGES_PER_GPU = 4
+    GPU_COUNT = 1
     # Number of classes (including background)
     NUM_CLASSES = 1 + 1  # Background + chemical structures
     # Number of training steps per epoch
@@ -234,7 +235,7 @@ if __name__ == '__main__':
         # Added anchors here as for some reason they cannot be loaded from DECIMER
         # Segmentation model It was also added to the 'heads' to train as they are
         # not pre-trained.
-        #model.load_weights(weights_path, by_name=True, exclude=[
+        # model.load_weights(weights_path, by_name=True, exclude=[
         #    #"mrcnn_class_logits",
         #    #"mrcnn_bbox_fc",
         #    #"mrcnn_bbox",
@@ -242,6 +243,7 @@ if __name__ == '__main__':
         #    "anchors"
         #    ])
         # model.load_weights(weights_path, by_name=True, exclude=["mrcnn_mask"])
-        #model.load_weights(weights_path, by_name=True)
+        model.load_weights(weights_path, by_name=True, exclude=["anchors"])
+        print("Weights loaded")
 
     train(model, args.smiles_file, args.pregenerated_structure_path)

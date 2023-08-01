@@ -1779,8 +1779,8 @@ class DataGenerator(KU.Sequence):
             # Skip images that have no instances. This can happen in cases
             # where we train on a subset of classes and the image doesn't
             # have any of the classes we care about.
-            # if not np.any(gt_class_ids > 0):
-            #    continue
+            if not np.any(gt_class_ids > 0):
+                continue
 
             # RPN Targets
             rpn_match, rpn_bbox = build_rpn_targets(image.shape, self.anchors,
@@ -2121,7 +2121,7 @@ class MaskRCNN(object):
 
         # Add multi-GPU support.
         if config.GPU_COUNT > 1:
-            from mrcnn.parallel_model import ParallelModel
+            from parallel_model import ParallelModel
             model = ParallelModel(model, config.GPU_COUNT)
 
         return model

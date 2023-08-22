@@ -2378,6 +2378,8 @@ class MaskRCNN(object):
             "mrcnn": r"(mrcnn\_.*)",
             # mrcnn mask
             "mrcnn_mask": r"(mrcnn_mask\_.*)",
+            # mrcnn bbox
+            "mrcnn_bbox": r"(mrcnn_bbox\_.*)",
             #"heads": r"(mrcnn\_.*)|(rpn\_.*)|(fpn\_.*)",
             "heads": r"(mrcnn\_.*)|(rpn\_.*)|(fpn\_.*)|(anchors)",
             # From a specific Resnet stage and up

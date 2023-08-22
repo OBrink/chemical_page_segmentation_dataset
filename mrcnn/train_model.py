@@ -181,7 +181,7 @@ def train(
     model.train(dataset,
                 learning_rate=config.LEARNING_RATE,
                 epochs=500,
-                layers='mrcnn_bbox',
+                layers='heads',
                 augmentation=augmentation)
 
 

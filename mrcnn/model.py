@@ -2216,7 +2216,7 @@ class MaskRCNN(object):
         #    momentum=momentum,
         #    clipnorm=self.config.GRADIENT_CLIP_NORM)
         # My attempts:
-        optimizer = keras.optimizers.legacy.Adam(
+        optimizer = keras.optimizers.Adam(
                          learning_rate=learning_rate,
                          beta_1=0.9,
                          beta_2=0.999,
